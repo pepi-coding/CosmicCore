@@ -2,8 +2,9 @@ import { B } from '../config/balance';
 import { clamp, type MassState } from './types';
 export function createMass(maximumMass: number, combatMass = maximumMass): MassState { const m = { maximumMass, combatMass, coreMass: 0, fieldMass: 0, orbitingStoredMass: 0, unbankedMass: 0, distribution: .5 }; distribute(m); return m; }
 export function distribute(m: MassState): void {
-  m.orbitingStoredMass = clamp(m.orbitingStoredMass, 0, m.combatMass);
-  const available = Math.max(0, m.combatMass - m.orbitingStoredMass);
+  // Captured objects are independent ammunition; they do not become a third mass partition.
+  m.orbitingStoredMass = Math.max(0, m.orbitingStoredMass);
+  const available = Math.max(0, m.combatMass);
   m.coreMass = available * (B.mass.coreMin + (B.mass.coreMax - B.mass.coreMin) * m.distribution);
   m.fieldMass = available - m.coreMass;
 }

@@ -4,7 +4,7 @@ export const C = {
   melee: {
     buffer: .23, chainTimeout: .55, reachExpanded: 100, reachCompressed: 74, arcExpansion: .18, densityDamage: .45,
     momentumSpeed: 440, momentumCap: .25, advance: 95, knockback: 140, stagger: .12, heavyStagger: .7, massReference: 100, massScaleMin: .35, massScaleMax: 1.4,
-    hitStop: .045, heavyHitStop: .085, heavyShake: .004, heavyShakeMs: 100, missRecovery: .4, channelCancelAfter: .7,
+    hitStop: .06, heavyHitStop: .085, heavyShake: .004, heavyShakeMs: 100, missRecovery: .4, channelCancelAfter: .7,
     attacks: [
       { windup: .1, active: .1, recovery: .16, damage: 9, arc: 1.25, reach: 1, force: .65, cancel: .78 },
       { windup: .16, active: .12, recovery: .2, damage: 12, arc: 1.45, reach: 1.1, force: .9, cancel: .8 },

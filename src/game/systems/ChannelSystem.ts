@@ -18,7 +18,7 @@ export function tickChannel(c: ChannelState, buttons: Buttons, dt: number, block
   else {
     if (c.mode !== desired) { stopChannel(c); c.mode = desired; c.lastMode = desired; c.decay = 0; }
     c.heldTime += dt;
-    c.intensity = desired === 'pull' ? C.channel.initial + (1 - C.channel.initial) * clamp(c.heldTime / C.channel.charge, 0, 1) : 1;
+    c.intensity = C.channel.initial + (1 - C.channel.initial) * clamp(c.heldTime / C.channel.charge, 0, 1);
     c.maximumReached = c.intensity >= 1;
     const ramp = C.flux.gentle + (1 - C.flux.gentle) * Math.min(1, c.heldTime / C.channel.charge);
     const heat = 1 + Math.max(0, c.heldTime - C.flux.accelerationAfter) * C.flux.acceleration;
@@ -37,6 +37,6 @@ export function channelForce(a: Actor, target: Vec, targetMass: number, obstacle
   const c = a.channel, dx = target.x - a.x, dy = target.y - a.y, r = Math.hypot(dx, dy);
   if (!c.mode || r === 0 || r > a.radius || !lineOfSight(a, target, obstacles)) return { x: 0, y: 0 };
   const resistance = clamp(a.mass.combatMass / Math.max(1, targetMass), C.channel.resistanceMin, C.channel.resistanceMax);
-  const force = Math.min(C.channel.maxAcceleration, (c.mode === 'pull' ? -C.channel.pullForce : C.channel.pulseForce) * c.intensity * (1 + a.mass.distribution * C.channel.densityBonus) * resistance * (c.mode === 'pull' ? a.modifiers.pull : a.modifiers.pulse));
+  const force = Math.min(C.channel.maxAcceleration, (c.mode === 'pull' ? -C.channel.pullForce : C.channel.pulseForce) * c.intensity * (c.mode === 'pull' ? 1 + a.mass.distribution * C.channel.densityBonus : 1 + (1 - a.mass.distribution) * .4) * resistance * (c.mode === 'pull' ? a.modifiers.pull : a.modifiers.pulse));
   return { x: dx / r * Math.max(-C.channel.maxAcceleration, force), y: dy / r * Math.max(-C.channel.maxAcceleration, force) };
 }

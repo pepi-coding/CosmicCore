@@ -1,10 +1,9 @@
 export const B = {
   step: 1 / 60, maxSteps: 6, arena: 2200, seed: 147,
-  mass: { initial: 100, minimum: 20, coreMin: .2, coreMax: .86, transition: 1.25, cap: 1.3, stolenProgress: .05, debris: 2.5, fragmentLife: 18 },
+  mass: { initial: 100, minimum: 20, coreMin: .28, coreMax: 1, transition: 1.25, cap: 1.3, stolenProgress: .05, debris: 2.5, fragmentLife: 18 },
   movement: { thrust: 650, inertia: .58, drag: 2.8, speed: 245, impulse: 440, overspeedDecay: 1, staggerMultiplier: .3, boundary: 30 },
-  gravity: { g: 2200, minDistance: 38, maxForce: 1400, radiusMin: 125, radiusMax: 300, density: 2.4, entityScale: .17 },
+  gravity: { g: 2200, minDistance: 38, maxForce: 1400, radiusMin: 100, radiusMax: 300, density: 2.4, entityScale: .17 },
   orbit: { minSlots: 2, maxSlots: 8, radius: .52, minDistance: 30, maxSpeed: 600, captureTime: .65, angularSpeed: 1.4, minTangent: 8 },
-  stability: { threshold: 10, exposure: 4, recovery: 14, penalty: .12, minExposure: 1.6, traumaDecay: 1.2 },
   combat: { projectileSpeed: 600, projectileLife: 2.2, shardMass: 1, shardDamage: 5, objectDamage: 4, velocityScale: 500, compressionBonus: .55, coreRadius: 18, fieldHitRadius: .6, ejectionResistance: .45, contactDamage: 8, contactCooldown: 1, stagger: .5, hitPadding: 7, glancingMultiplier: .4, minVelocityDamage: .5, impactRetention: .3, contactPadding: 4, contactPush: 30, launchOffset: 8, fragmentOffset: 48, fragmentSpeed: 190 },
   abilities: { cast: .32, impulse: 3.5, pulse: 6, surge: 9, pulseCost: 4, pulseForce: 350, pulseDamage: 3, surgeDuration: 1.3, surgeRate: 3, recoveryDuration: 2, recoveryRate: .4 },
   progression: { deathPercent: .01, deathCap: 10, bankShare: 1 },
@@ -13,7 +12,7 @@ export const B = {
   enemy: { drifterMass: 32, orbiterMass: 44, leechMass: 30, wispMass: 36, guardianMass: 145, speed: .65, guardianCycle: 7 },
   pvp: { duration: 240, suddenDeathDrain: 3, suddenDeathTrauma: 2 },
   debris: { driftSpeed: 55, initialNearCount: 12, nearMin: 90, nearSpread: 180, farMin: 300, farSpread: 650, boundary: 5 },
-  visuals: { stars: 200, debrisCount: 50, hudInterval: .1, zoomMin: .45, zoomMax: 1.1 },
+  visuals: { stars: 200, debrisCount: 50, hudInterval: .1, zoomMin: .5, zoomMax: 1.45 },
 } as const;
 
 export function validateBalance(config: typeof B = B): void {

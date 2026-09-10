@@ -59,7 +59,7 @@ describe('facing-directed melee',()=>{
     const t=new ButtonTracker(); tickMelee(p,t.sample({primary:true}).primary,B.step,false);expect(p.melee.phase).toBe('windup');s.resolveMelee();expect(r.mass.combatMass).toBe(100);
     for(let i=0;i<7;i++)tickMelee(p,t.sample({}).primary,B.step,false);
     expect(p.melee.phase).toBe('active');expect(withinMeleeArc(p,r)).toBe(true);expect(withinMeleeArc(p,{x:p.x-50,y:p.y})).toBe(false);expect(withinMeleeArc(p,{x:p.x+500,y:p.y})).toBe(false);
-    s.resolveMelee();expect(r.mass.combatMass).toBeLessThan(100);const mass=r.mass.combatMass;s.resolveMelee();expect(r.mass.combatMass).toBe(mass);expect(s.debris.some(d=>d.projectile)).toBe(false);
+    s.resolveMelee();expect(r.integrity.current).toBeLessThan(100);expect(r.mass.combatMass).toBe(100);const hp=r.integrity.current;s.resolveMelee();expect(r.integrity.current).toBe(hp);expect(s.debris.some(d=>d.projectile)).toBe(false);
   });
   it('chains three timings and punishes a missed finisher',()=>{
     const p=new Simulation('training',100).player,t=new ButtonTracker(),indices=new Set<number>();let heavyRecovery=0;
@@ -74,9 +74,9 @@ describe('facing-directed melee',()=>{
     const p=new Simulation('training',100).player;p.mass.distribution=0;const reach=meleeReach(p),damage=meleeDamage(p);p.mass.distribution=1;expect(meleeReach(p)).toBeLessThan(reach);expect(meleeDamage(p)).toBeGreaterThan(damage);p.vx=1000;const fast=meleeDamage(p);p.vx=100000;expect(meleeDamage(p)).toBe(fast);
   });
   it('boss anchor rejects attacks until a channel creates a melee opening',()=>{
-    const s=new Simulation('pve',100);s.enterRoom(2);const [p,boss]=s.actors;p.x=boss.x-60;p.y=boss.y;const mass=boss.mass.combatMass;s.hit(boss,30,true,true);expect(boss.mass.combatMass).toBe(mass);
+    const s=new Simulation('pve',100);s.enterRoom(2);const [p,boss]=s.actors;p.x=boss.x-60;p.y=boss.y;const mass=boss.integrity.current;s.hit(boss,30,true,true);expect(boss.integrity.current).toBe(mass);
     const t=new ButtonTracker();for(let i=0;i<45;i++){tickChannel(p.channel,t.sample({pull:true}),B.step);s.resolveChannels(B.step);}expect(boss.guardBroken).toBeGreaterThan(0);
-    s.hit(boss,30,true);expect(boss.mass.combatMass).toBe(mass);s.hit(boss,30,true,true);expect(boss.mass.combatMass).toBeLessThan(mass);
+    s.hit(boss,30,true);expect(boss.integrity.current).toBe(mass);s.hit(boss,30,true,true);expect(boss.integrity.current).toBeLessThan(mass);
   });
 });
 describe('local collection and economy',()=>{

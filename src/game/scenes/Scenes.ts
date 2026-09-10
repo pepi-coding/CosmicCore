@@ -13,9 +13,9 @@ import { arenaContent as map, asteroidAt } from '../content/arena';
 import { ActionInput } from '../input/ActionInput';
 import { LocalProfileStore, settle } from '../persistence/Profile';
 import { Simulation } from '../systems/Simulation';
-import { protectedMass } from '../systems/StabilitySystem';
+import { coreExposed, integrityRatio } from '../systems/IntegritySystem';
 import { slots } from '../systems/OrbitSystem';
-import { seeded, type Mode, type Result } from '../systems/types';
+import { seeded, distance, type Actor, type Mode, type Result } from '../systems/types';
 
 export const ui = () => document.querySelector<HTMLDivElement>('#ui')!;
 export const store = new LocalProfileStore();
@@ -38,7 +38,7 @@ export class MainMenuScene extends Phaser.Scene {
   constructor() { super('MainMenuScene'); }
   create(): void {
     backdrop(this); const profile = store.load();
-    ui().innerHTML = `<main class="menu"><header><a class="brand">◈ <span>COSMIC CORE</span></a><span class="version">COMBAT & COLLECTION / 1.1</span></header><section class="hero"><div class="eyebrow"><span class="dot"></span> A SMALL CORE. AN UNLIMITED COSMOS.</div><h1>Make space.<br><em>Become mass.</em></h1><p>Expand to capture. Compress to strike.<br>Everything you gather is everything you stand to lose.</p><div class="profile"><div class="core-icon">✦</div><div><small>YOUR CORE / ${divisionFor(profile.maximumMass).name.toUpperCase()}</small><strong>${profile.maximumMass.toFixed(1)} <span>MAXIMUM MASS</span></strong></div><span class="saved">● LOCAL PROFILE</span></div></section><nav class="modes"><button data-mode="training"><span class="mode-no">01 / LEARN THE PULL</span><strong>Training sandbox <b>↗</b></strong><span>Find your orbit. Master your distribution.</span><small>FREE EXPLORATION · NO PROGRESSION RISK</small></button><button data-mode="pve" class="featured"><span class="mode-no">02 / GATHER & RETURN</span><strong>The Silent Orbit <b>↗</b></strong><span>Three rooms. One anchored Core. Earn your return.</span><small>THREE-ROOM DUNGEON · NORMAL</small></button><button data-mode="pvp"><span class="mode-no">03 / CORE AGAINST CORE</span><strong>Orbital duel <b>↗</b></strong><span>Control the field against a deterministic rival.</span><small>LOCAL BOT · 1V1 · 4 MINUTES</small></button></nav><footer><span>WASD move <i>·</i> SHIFT compress <i>·</i> CTRL expand <i>·</i> Mouse aim & melee</span><span>◇ Planetary evolution <strong>LOCKED</strong></span></footer></main>`;
+    ui().innerHTML = `<main class="menu"><header><a class="brand">◈ <span>COSMIC CORE</span></a><span class="version">CORE INTEGRITY / 1.2</span></header><section class="hero"><div class="eyebrow"><span class="dot"></span> A SMALL CORE. AN UNLIMITED COSMOS.</div><h1>Make space.<br><em>Become mass.</em></h1><p>Expand to capture. Compress to strike.<br>Everything you gather is everything you stand to lose.</p><div class="profile"><div class="core-icon">✦</div><div><small>YOUR CORE / ${divisionFor(profile.maximumMass).name.toUpperCase()}</small><strong>${profile.maximumMass.toFixed(1)} <span>MAXIMUM MASS</span></strong></div><span class="saved">● LOCAL PROFILE</span></div></section><nav class="modes"><button data-mode="training"><span class="mode-no">01 / LEARN THE PULL</span><strong>Training sandbox <b>↗</b></strong><span>Find your orbit. Master your distribution.</span><small>FREE EXPLORATION · NO PROGRESSION RISK</small></button><button data-mode="pve" class="featured"><span class="mode-no">02 / GATHER & RETURN</span><strong>The Silent Orbit <b>↗</b></strong><span>Three rooms. One anchored Core. Earn your return.</span><small>THREE-ROOM DUNGEON · NORMAL</small></button><button data-mode="pvp"><span class="mode-no">03 / CORE AGAINST CORE</span><strong>Orbital duel <b>↗</b></strong><span>Control the field against a deterministic rival.</span><small>LOCAL BOT · 1V1 · 4 MINUTES</small></button></nav><footer><span>WASD move <i>·</i> HOLD E pull <i>·</i> HOLD Q pulse <i>·</i> Mouse aim & melee</span><span>◇ Planetary evolution <strong>LOCKED</strong></span></footer></main>`;
     ui().querySelectorAll<HTMLButtonElement>('[data-mode]').forEach(button => button.onclick = () => this.scene.start(button.dataset.mode === 'pve' ? 'DungeonSelectScene' : sceneFor[button.dataset.mode as Mode]));
     const collection = document.createElement('button'); collection.id = 'collection'; collection.className = 'quiet'; collection.textContent = 'Manifestations ↗'; collection.onclick = () => this.scene.start('CollectionScene'); ui().querySelector('header')!.append(collection);
   }
@@ -46,10 +46,11 @@ export class MainMenuScene extends Phaser.Scene {
 class ArenaScene extends Phaser.Scene {
   sim!: Simulation; inputActions!: ActionInput; graphics!: Phaser.GameObjects.Graphics; stars!: Phaser.GameObjects.Graphics;
   accumulator = 0; hudTimer = 0; finished = false; paused = false; debug = false; sprites = new Map<number, Phaser.GameObjects.Zone>();
+  labels = new Map<number, Phaser.GameObjects.Text>(); damageLabels: Phaser.GameObjects.Text[] = []; displayedMass = new Map<number, number>();
   rig!: VesselRig; audio!: CombatAudio; lastHit = 0; resultDelay = 0; renderTime = 0;
   constructor(key: string, private mode: Mode) { super(key); }
   create(): void {
-    this.accumulator = 0; this.hudTimer = 0; this.finished = false; this.paused = false; this.sprites.clear();
+    this.accumulator = 0; this.hudTimer = 0; this.finished = false; this.paused = false; this.sprites.clear(); this.labels.clear(); this.damageLabels=[]; this.displayedMass.clear();
     const profile = store.load();
     if (this.mode === 'pve' && !enterDungeon(profile)) { this.scene.start('DungeonSelectScene'); return; }
     if (this.mode === 'pve' && economy.energyEnabled) store.save(profile);
@@ -62,10 +63,9 @@ class ArenaScene extends Phaser.Scene {
     for (let i = 0; i < B.visuals.stars; i++) { this.stars.fillStyle(0x8ca3be, .2 + random() * .45); this.stars.fillCircle(random() * B.arena, random() * B.arena, .6 + random()); }
     this.cameras.main.setBackgroundColor('#080c19');
     this.inputActions = new ActionInput(this.game.canvas);
-    ui().innerHTML = `<div class="hud"><header class="hud-top"><div class="hud-title"><span class="brand">◈ COSMIC CORE</span><small>${this.mode === 'pve' ? 'THE SILENT ORBIT / NORMAL' : this.mode === 'pvp' ? `LOCAL BOT DUEL / ${divisionFor(this.sim.maximumMass).name.toUpperCase()}` : 'TRAINING / NO PROGRESSION RISK'}</small></div><div id="objective"></div><button id="pause" class="quiet">Ⅱ Pause</button><button id="exit" class="quiet">Exit ↗</button></header><div class="mass-panel"><small>CONTROLLED MASS</small><strong id="mass-value"></strong><div class="distribution"><i id="core-meter"></i><i id="field-meter"></i></div><div class="split-label"><span id="core-value"></span><span id="field-value"></span></div><div id="stability"></div><div id="bank"></div></div><div id="rival"></div><div class="mission-note" id="mission-note"></div><div class="ability-bar"><button data-action="impulse"><kbd>SPACE</kbd><span>↗ Impulse</span><small id="cd-impulse">READY</small></button><button data-action="pulse"><kbd>Q</kbd><span>◎ Mass pulse</span><small id="cd-pulse">READY</small></button><button data-action="surge"><kbd>E</kbd><span>✦ Surge</span><small id="cd-surge">READY</small></button></div><div class="desktop-hints">WASD <span>thrust</span> · Mouse <span>melee</span> · SHIFT <span>compress</span> · CTRL <span>expand</span><button id="reset">Reset training</button><button id="debug">Telemetry</button></div><div class="touch-controls"><div class="stick" data-stick="move"><i></i><span>THRUST</span></div><div class="redistribute"><button data-action="expand">⊕ Expand</button><button data-action="compress">⊙ Compress</button></div><div class="stick" data-stick="aim"><i></i><span>AIM / CAST</span></div></div><pre id="debug-panel" hidden></pre><div id="pause-overlay" hidden><h2>Orbit paused</h2><p>Resume when you’re ready.</p><button id="resume">Resume →</button></div></div>`;
-    const massPanel = ui().querySelector('.mass-panel')!;
-    massPanel.insertAdjacentHTML('beforeend', '<div class="flux-header"><span>FLUX</span><span id="flux-value">100</span></div><div class="flux-track"><i id="flux-meter"></i></div><div id="channel-state">READY</div>');
-    ui().querySelector('.ability-bar')!.innerHTML = '<button data-action="impulse"><kbd>SPACE</kbd><span>↗ Impulse</span><small id="cd-impulse">READY</small></button><button data-action="pulse"><kbd>HOLD Q</kbd><span>◎ Discharge</span><small id="cd-pulse">HOLD</small></button><button data-action="pull"><kbd>HOLD E</kbd><span>◉ Pull</span><small id="cd-pull">HOLD</small></button><button data-action="orbit"><kbd>R</kbd><span>◇ Orbit cast</span><small id="cd-orbit">READY</small></button>';
+    ui().innerHTML = `<div class="hud"><header class="hud-top"><div class="hud-title"><span class="brand">◈ COSMIC CORE</span><small>${this.mode === 'pve' ? 'THE SILENT ORBIT / NORMAL' : this.mode === 'pvp' ? `LOCAL BOT DUEL / ${divisionFor(this.sim.maximumMass).name.toUpperCase()}` : 'TRAINING / NO PROGRESSION RISK'}</small></div><div id="objective"></div><button id="pause" class="quiet">Ⅱ Pause</button><button id="exit" class="quiet">Exit ↗</button></header><div class="mass-panel"><small>TOTAL MASS</small><strong id="mass-value"></strong><div class="distribution"><i id="core-meter"></i><i id="field-meter"></i></div><div class="split-label"><span id="core-value"></span><span id="field-value"></span></div><div class="integrity-track"><i id="integrity-meter"></i></div><div id="integrity"></div><div id="bank"></div></div><div id="rival"></div><div class="mission-note" id="mission-note"></div><div class="ability-bar"><button data-action="impulse"><kbd>SPACE</kbd><span>↗ Impulse</span><small id="cd-impulse">READY</small></button><button data-action="pulse"><kbd>Q</kbd><span>◎ Mass pulse</span><small id="cd-pulse">READY</small></button><button data-action="surge"><kbd>E</kbd><span>✦ Surge</span><small id="cd-surge">READY</small></button></div><div class="desktop-hints">WASD <span>thrust</span> · Mouse <span>melee</span> · HOLD E <span>pull</span> · HOLD Q <span>pulse</span><button id="reset">Reset training</button><button id="debug">Telemetry</button></div><div class="touch-controls"><div class="stick" data-stick="move"><i></i><span>THRUST</span></div><div class="stick" data-stick="aim"><i></i><span>AIM / CAST</span></div></div><pre id="debug-panel" hidden></pre><div id="pause-overlay" hidden><h2>Orbit paused</h2><p>Resume when you’re ready.</p><button id="resume">Resume →</button></div></div>`;
+    ui().querySelector('.ability-bar')!.innerHTML = '<button data-action="pull" class="pull-control"><kbd>HOLD E</kbd><span>◉ Pull</span><small id="cd-pull">HOLD</small></button><div class="combat-state"><div class="flux-header"><span>FLUX</span><span id="flux-value">100</span></div><div class="flux-track"><i id="flux-meter"></i></div><div id="channel-state">FLUX READY</div><div id="melee-chain" aria-label="Melee chain"><i></i><i></i><i></i></div></div><button data-action="pulse" class="pulse-control"><kbd>HOLD Q</kbd><span>◎ Pulse</span><small id="cd-pulse">HOLD</small></button>';
+    ui().querySelector('.hud')!.insertAdjacentHTML('beforeend','<div class="secondary-abilities"><button data-action="impulse"><kbd>SPACE</kbd> Impulse <small id="cd-impulse">READY</small></button><button data-action="orbit"><kbd>R</kbd> Orbit cast <small id="cd-orbit">READY</small></button></div>');
     ui().querySelector('[data-stick="aim"] span')!.textContent = 'AIM / MELEE';
     this.inputActions.attachTouch(ui());
     const sound = document.createElement('button'); sound.id = 'sound'; sound.className = 'quiet'; sound.textContent = 'Sound on'; sound.onclick = () => { this.audio.enabled = !this.audio.enabled; sound.textContent = this.audio.enabled ? 'Sound on' : 'Sound off'; }; ui().querySelector('.hud-top')!.append(sound);
@@ -80,7 +80,7 @@ class ArenaScene extends Phaser.Scene {
     ui().querySelector<HTMLButtonElement>('#reset')!.onclick = () => this.scene.restart();
     ui().querySelector<HTMLButtonElement>('#debug')!.onclick = () => { this.debug = !this.debug; };
     const blur = () => { if (!this.paused) this.togglePause(); }; window.addEventListener('blur', blur);
-    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => { this.inputActions.destroy(); this.rig.destroy(); this.audio.destroy(); window.removeEventListener('blur', blur); });
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => { this.inputActions.destroy(); this.rig.destroy(); this.audio.destroy(); this.labels.clear(); this.damageLabels=[]; window.removeEventListener('blur', blur); });
     this.updateHUD();
   }
   togglePause(): void { this.paused = !this.paused; this.inputActions.clear(); ui().querySelector<HTMLElement>('#pause-overlay')!.hidden = !this.paused; }
@@ -89,7 +89,7 @@ class ArenaScene extends Phaser.Scene {
     const portrait = matchMedia('(pointer: coarse) and (orientation: portrait)').matches;
     if (!this.paused && !portrait && !this.sim.result) {
       this.accumulator += Math.min(delta / 1000, B.step * B.maxSteps);
-      while (this.accumulator >= B.step) { this.sim.step(this.inputActions.sample({ x: this.scale.width / 2, y: this.scale.height / 2 }, B.step)); this.accumulator -= B.step; }
+      while (this.accumulator >= B.step) { this.sim.step(this.inputActions.sample({ x: (this.sim.player.x-this.cameras.main.worldView.x)*this.cameras.main.zoom, y: (this.sim.player.y-this.cameras.main.worldView.y)*this.cameras.main.zoom }, B.step)); this.accumulator -= B.step; }
     }
     this.renderWorld();
     this.audio.update(this.sim.player.channel, this.paused || portrait || !!this.sim.result);
@@ -108,9 +108,12 @@ class ArenaScene extends Phaser.Scene {
   }
   renderWorld(): void {
     const g = this.graphics, p = this.sim.player, cam = this.cameras.main;
-    const desired = Phaser.Math.Clamp(Math.min(this.scale.width * .68, this.scale.height * .75) / (p.radius * 2 + 80), B.visuals.zoomMin, B.visuals.zoomMax);
-    cam.setZoom(Phaser.Math.Linear(cam.zoom, desired, .04)); cam.centerOn(p.x, p.y);
+    const rival = this.sim.actors.filter(a=>a!==p&&a.alive).sort((a,b)=>distance(a,p)-distance(b,p))[0];
+    const framed = this.mode === 'pvp' && rival ? rival : rival && distance(p,rival)<500 ? rival : p;
+    const desired = Phaser.Math.Clamp(Math.min(this.scale.width*.8/(Math.abs(p.x-framed.x)+200), this.scale.height*.72/(Math.abs(p.y-framed.y)+220)), B.visuals.zoomMin, B.visuals.zoomMax);
+    cam.setZoom(Phaser.Math.Linear(cam.zoom, desired, .05)); cam.centerOn((p.x+framed.x)/2,(p.y+framed.y)/2);
     g.clear(); g.lineStyle(2, 0x364965, .5); g.strokeRect(20, 20, B.arena - 40, B.arena - 40);
+    if(this.mode==='pvp'){const b=map.duelBounds;g.fillStyle(0x142332,.6);g.fillRect(b.left,b.top,b.right-b.left,b.bottom-b.top);g.lineStyle(4,0x8aafba,.8);g.strokeRect(b.left,b.top,b.right-b.left,b.bottom-b.top);}
     g.lineStyle(1, 0x22314b, .23); for (let i = 0; i <= B.arena; i += 100) { g.lineBetween(i, 0, i, B.arena); g.lineBetween(0, i, B.arena, i); }
     if (this.mode === 'pve') {
       const room = dungeon.rooms[this.sim.room], half = dungeon.roomHalfSize;
@@ -125,14 +128,25 @@ class ArenaScene extends Phaser.Scene {
     this.rig.prune(new Set(this.sim.actors.map(a => a.id)));
     for (const a of this.sim.actors) {
       this.rig.render(a, this.sim.time + this.resultDelay, !!this.sim.result?.won && a === p);
-      if (!a.alive) continue;
+      if (!a.alive) { this.labels.get(a.id)?.setVisible(false); const t=(this.sim.time+this.resultDelay-a.deathTime)/C.feedback.collapseDuration;if(t<1){g.lineStyle(5,0xffdca7,1-t);g.strokeCircle(a.x,a.y,20+t*100);for(let i=0;i<16;i++){const angle=i*Math.PI/8;g.fillStyle(0xffdca7,1-t);g.fillCircle(a.x+Math.cos(angle)*t*125,a.y+Math.sin(angle)*t*125,4*(1-t));}} continue; }
       const friendly = a === p, color = friendly ? manifestationFor(a.manifestationId).color : a.kind === 'guardian' ? 0xffc276 : 0xf67a8e;
       g.fillStyle(color, .035 + a.mass.distribution * .035); g.fillCircle(a.x, a.y, a.radius);
-      g.lineStyle(1.5, color, .45); g.strokeCircle(a.x, a.y, a.radius);
+      g.lineStyle(1.5 + a.channel.intensity * 2, color, .45 + a.channel.intensity * .3);
+      g.beginPath();
+      for(let i=0;i<=80;i++){const angle=i/80*Math.PI*2;let r=a.radius;const edge={x:a.x+Math.cos(angle)*r,y:a.y+Math.sin(angle)*r};for(const other of this.sim.actors)if(other!==a&&other.alive&&distance(edge,other)<other.radius)r-=12*(1-distance(edge,other)/other.radius)*(1+Math.sin(angle*7+this.sim.time*3)*.3);const x=a.x+Math.cos(angle)*r,y=a.y+Math.sin(angle)*r;if(i===0)g.moveTo(x,y);else g.lineTo(x,y);}g.strokePath();
       g.lineStyle(1, color, .13); g.strokeCircle(a.x, a.y, a.radius * .52);
       const radius = B.combat.coreRadius + a.mass.distribution * 5;
       for (let i = 4; i > 0; i--) { g.fillStyle(color, .035); g.fillCircle(a.x, a.y, radius + i * 8); }
-      if (a.stability.phase === 'unstable') { g.lineStyle(4, 0xffffff, .5 + Math.sin(this.sim.time * 16) * .45); g.strokeCircle(a.x, a.y, radius + 12); g.lineStyle(2, 0xff5069, .9); g.strokeCircle(a.x, a.y, radius + 25); }
+      if (coreExposed(a)) { g.lineStyle(4, 0xffffff, .5 + Math.sin(this.sim.time * 16) * .45); g.strokeCircle(a.x, a.y, radius + 12); g.lineStyle(2, 0xff5069, .9); g.strokeCircle(a.x, a.y, radius + 25); }
+      const hp = integrityRatio(a);
+      g.fillStyle(0x080c19,.95);g.fillRoundedRect(a.x-44,a.y-87,88,8,3);g.fillStyle(coreExposed(a)?0xff637e:0x8ff5cf);g.fillRoundedRect(a.x-43,a.y-86,86*hp,6,2);
+      let label=this.labels.get(a.id);if(!label){label=this.add.text(0,0,'',{fontFamily:'Arial',fontSize:'10px',color:'#e6eef7',align:'center',stroke:'#080c19',strokeThickness:3}).setOrigin(.5,1).setDepth(30);this.labels.set(a.id,label);}
+      const shown=Phaser.Math.Linear(this.displayedMass.get(a.id)??a.mass.combatMass,a.mass.combatMass,.12);this.displayedMass.set(a.id,shown);
+      const name=a===p?'YOUR CORE':a.kind==='bot'?'VOID INITIATE':a.kind.toUpperCase();
+      label.setVisible(true).setPosition(a.x,a.y-91).setText(name+'\n'+Math.round(shown)+' MASS'+(coreExposed(a)?'\nCORE EXPOSED':''));
+      const selected=a!==p && a===this.sim.actors.filter(t=>t!==p&&t.alive&&distance(p,t)<Math.max(p.radius,meleeReach(p))).sort((x,y)=>distance(p,x)-distance(p,y))[0];
+      if(selected){g.lineStyle(2,0xffe7ae,.75);g.strokeEllipse(a.x,a.y+9,67,26);}
+      if(hp<.65){g.lineStyle(2,0xffa0ab,.9);for(let i=0;i<Math.ceil((1-hp)*7);i++){const angle=i*2.4;g.beginPath();g.moveTo(a.x+Math.cos(angle)*8,a.y+Math.sin(angle)*8);g.lineTo(a.x+Math.cos(angle+.2)*20,a.y+Math.sin(angle+.2)*20);g.lineTo(a.x+Math.cos(angle)*31,a.y+Math.sin(angle)*31);g.strokePath();}}
       const channel = a.channel;
       if (channel.mode || channel.decay > 0) {
         const inward = (channel.mode ?? channel.lastMode) === 'pull', alpha = channel.mode ? .25 + channel.intensity * .35 : channel.decay / C.channel.releaseDecay * .35;
@@ -141,15 +155,26 @@ class ArenaScene extends Phaser.Scene {
         for (let i = 0; i < 14; i++) { const angle = i * Math.PI * 2 / 14 + this.sim.time * .2, t = (this.sim.time + i / 14) % 1, r = (inward ? 1-t : t) * a.radius; g.fillStyle(inward ? 0xa4e1ff : 0xffd59a,alpha); g.fillCircle(a.x+Math.cos(angle)*r,a.y+Math.sin(angle)*r,2); }
         g.fillStyle(0xffffff, channel.intensity * .6); g.fillCircle(a.x,a.y,8);
       }
+      if(channel.mode==='pull'){g.fillStyle(0xc3f4ff,.12+a.mass.distribution*.25);g.fillCircle(a.x,a.y-13,10+a.mass.distribution*8);}
+      if(channel.mode==='pulse'){g.lineStyle(4,0xffd599,.35);for(const side of [-1,1]){g.lineBetween(a.x+side*16,a.y-16,a.x+side*(30+(1-a.mass.distribution)*25),a.y-28);g.lineStyle(2,0xffd599,.18);g.lineBetween(a.x+side*25,a.y-10,a.x+side*60,a.y+5);}}
       if (channel.overload > 0) { g.lineStyle(3, 0xff705c, .7); g.strokeCircle(a.x,a.y,32); }
       if (a.kind === 'guardian' && this.mode === 'pve') { g.lineStyle(4, a.guardBroken > 0 ? 0x87ffbf : 0xe7bd7a, .85); g.strokeCircle(a.x,a.y,44); }
       if (a.melee.phase !== 'idle') {
         const reach = meleeReach(a), spec = attackSpec(a), angle = a.melee.angle, arc = spec.arc / 2 + (1-a.mass.distribution)*C.melee.arcExpansion;
-        g.lineStyle(a.melee.index===2 ? 6 : 3, color, a.melee.phase === 'active' ? .9 : .2); g.beginPath(); g.arc(a.x,a.y,reach,angle-arc,angle+arc,false);g.strokePath();
+        g.lineStyle(a.melee.index===2 ? 6 : 3, color, a.melee.missed ? .12 : a.melee.phase === 'active' ? .9 : .3); g.beginPath(); g.arc(a.x,a.y,reach,angle-arc,angle+arc,false);g.strokePath();
       }
       if (!this.sprites.has(a.id)) { const zone = this.add.zone(a.x, a.y, radius * 2, radius * 2); this.physics.add.existing(zone); (zone.body as Phaser.Physics.Arcade.Body).moves = false; this.sprites.set(a.id, zone); }
       const zone = this.sprites.get(a.id)!; zone.setPosition(a.x, a.y); (zone.body as Phaser.Physics.Arcade.Body).reset(a.x, a.y);
     }
+    for(const [id,label] of this.labels)if(!this.sim.actors.some(a=>a.id===id)){label.destroy();this.labels.delete(id);this.displayedMass.delete(id);}
+    for(const o of this.sim.obstacles){g.fillStyle(0x253340);g.fillCircle(o.x,o.y,o.radius);g.lineStyle(3,0x5b788a);g.strokeCircle(o.x,o.y,o.radius);}
+    if(this.mode!=='pve'){
+      for(const [zone,color] of [[map.well,0x659cff],[map.entropy,0xc167eb]] as const){g.fillStyle(color,.12);g.fillCircle(zone.x,zone.y,zone.radius);g.lineStyle(2,color,.6);g.strokeCircle(zone.x,zone.y,zone.radius);for(let i=0;i<3;i++)g.strokeCircle(zone.x,zone.y,zone.radius*((this.sim.time*.2+i/3)%1));}
+    }
+    for(const c of this.sim.crystals)if(c.hp>0){g.fillStyle(0x86ffde,.8);g.fillTriangle(c.x,c.y-24,c.x-17,c.y+12,c.x+17,c.y+12);g.lineStyle(2,0xffffff,.6);g.strokeTriangle(c.x,c.y-24,c.x-17,c.y+12,c.x+17,c.y+12);g.lineBetween(c.x,c.y-24,c.x,c.y+12);}
+    const events=this.sim.damageEvents.filter(e=>e.amount>=.5);
+    while(this.damageLabels.length<events.length)this.damageLabels.push(this.add.text(0,0,'',{fontFamily:'Arial',fontSize:'18px',fontStyle:'bold',stroke:'#080c19',strokeThickness:4}).setOrigin(.5).setDepth(40));
+    this.damageLabels.forEach((label,i)=>{const e=events[i];label.setVisible(!!e);if(e){const age=this.sim.time-e.time, target=this.sim.actors.find(a=>a.id===e.target), x=target?.x??e.x, y=target?target.y-65:e.y;label.setText('-'+e.amount.toFixed(0)).setColor(e.critical?'#ffd080':'#ffffff').setPosition(x,y-age*60).setAlpha(Math.min(1,(.85-age)*3));for(let j=0;j<7;j++){const angle=j*2.4;g.fillStyle(e.critical?0xffd080:0xffffff,Math.max(0,1-age*4));g.fillCircle(e.x+Math.cos(angle)*age*120,e.y+55+Math.sin(angle)*age*120,2);}}});
     for (const d of this.sim.debris) {
       const color = d.owner === p.id ? 0x9bffe0 : d.owner !== null ? 0xff829b : d.previousOwner !== null ? 0xffd795 : 0xb4c8de;
       if (d.projectile) { g.lineStyle(3, color, .45); g.lineBetween(d.x, d.y, d.x - d.vx * .04, d.y - d.vy * .04); }
@@ -160,16 +185,18 @@ class ArenaScene extends Phaser.Scene {
   }
   updateHUD(): void {
     const p = this.sim.player, m = p.mass, text = (id: string, value: string) => { ui().querySelector<HTMLElement>(`#${id}`)!.textContent = value; };
-    text('mass-value', m.combatMass.toFixed(1)); text('core-value', `${m.coreMass.toFixed(0)} CORE`); text('field-value', `${m.fieldMass.toFixed(0)} FIELD`);
+    text('mass-value', m.combatMass.toFixed(1)); text('core-value', `${m.coreMass.toFixed(0)} CORE`); text('field-value', `${m.fieldMass.toFixed(0)} EXTERNAL`);
     ui().querySelector<HTMLElement>('#core-meter')!.style.width = `${m.coreMass / Math.max(1, m.combatMass) * 100}%`;
     ui().querySelector<HTMLElement>('#field-meter')!.style.width = `${m.fieldMass / Math.max(1, m.combatMass) * 100}%`;
-    text('stability', p.stability.phase === 'unstable' ? `⚠ CORE EXPOSED · ${(p.stability.unstableRemainingMs / 1000).toFixed(1)}s` : '● CORE STABLE');
-    ui().querySelector<HTMLElement>('#stability')!.className = p.stability.phase;
+    text('integrity', 'CORE INTEGRITY '+Math.ceil(p.integrity.current)+' / '+p.integrity.maximum+(coreExposed(p)?' · CORE EXPOSED':''));
+    ui().querySelector<HTMLElement>('#integrity-meter')!.style.width = integrityRatio(p)*100+'%';
+    ui().querySelector<HTMLElement>('#integrity')!.className = coreExposed(p)?'exposed':'';
+    ui().querySelectorAll<HTMLElement>('#melee-chain i').forEach((marker,i)=>marker.classList.toggle('connected',p.melee.phase!=='idle'&&(p.comboConnected&(1<<i))!==0));
     text('bank', this.mode === 'pve' ? `◇ ${m.unbankedMass.toFixed(1)} unbanked mass` : `${this.sim.debris.filter(d => d.owner === p.id).length} / ${slots(p)} orbits · ${m.orbitingStoredMass.toFixed(1)} stored`);
     text('objective', this.mode === 'pvp' ? this.sim.suddenDeath ? 'SUDDEN DEATH' : clock(Math.max(0, B.pvp.duration - this.sim.time)) : clock(this.sim.time));
-    text('mission-note', this.mode === 'pve' ? this.sim.missionStage : this.mode === 'training' ? this.sim.trainingEngaged ? 'Pull to close distance. Melee to expose the Core. Discharge to escape.' : 'Hold E to pull · Hold Q to discharge · Primary: three-hit melee · R: orbit cast.' : `EFFECTIVE MASS ${this.sim.effectiveMass.toFixed(1)} · BOT SIMULATION`);
-    const rival = this.sim.actors.find(a => a !== p && a.alive);
-    text('rival', rival?.kind === 'guardian' && this.mode === 'pve' ? rival.guardBroken > 0 ? 'ANCHOR BROKEN · MELEE NOW · ' + rival.guardBroken.toFixed(1) + 's' : 'ANCHORED · HOLD PULL / DISCHARGE NEAR BOSS' : rival ? `${rival.kind.toUpperCase()} / ${rival.stability.phase.toUpperCase()} · ${rival.mass.combatMass.toFixed(0)} MASS` : 'FIELD CLEAR');
+    text('mission-note', this.mode === 'pve' ? this.sim.missionStage : this.mode === 'training' ? this.sim.trainingEngaged ? 'Pull to close distance. Melee damages Core Integrity. Pulse to expand and escape.' : 'Hold E to pull · Hold Q to pulse · Primary: three-hit melee · R: orbit cast.' : `EFFECTIVE MASS ${this.sim.effectiveMass.toFixed(1)} · BOT SIMULATION`);
+    const rival = this.sim.actors.filter(a => a !== p && a.alive && distance(a,p)<Math.max(p.radius,meleeReach(p))).sort((a,b)=>distance(a,p)-distance(b,p))[0];
+    text('rival', rival?.kind === 'guardian' && this.mode === 'pve' ? rival.guardBroken > 0 ? 'ANCHOR BROKEN · MELEE NOW · ' + rival.guardBroken.toFixed(1) + 's' : 'ANCHORED · HOLD PULL / PULSE NEAR BOSS' : rival ? `${rival.kind.toUpperCase()} / ${Math.ceil(rival.integrity.current)} HP · ${rival.mass.combatMass.toFixed(0)} MASS` + ' · ' + (rival.mass.combatMass < p.mass.combatMass*.9 ? 'LIGHTER · PULL ADVANTAGE' : rival.mass.combatMass > p.mass.combatMass*1.1 ? 'HEAVIER · PULL RESISTED' : 'BALANCED') : 'NO TARGET IN RANGE');
     const channel = p.channel;
     text('flux-value', channel.flux.toFixed(0)); ui().querySelector<HTMLElement>('#flux-meter')!.style.width = channel.flux + '%';
     ui().querySelector<HTMLElement>('.flux-track')!.className = 'flux-track' + (channel.flux <= C.flux.low ? ' low' : '');
@@ -177,7 +204,7 @@ class ArenaScene extends Phaser.Scene {
     for (const key of ['impulse', 'orbit'] as const) text('cd-'+key, p.cooldown[key] > 0 ? p.cooldown[key].toFixed(1)+'s' : 'READY');
     for (const key of ['pull','pulse'] as const) text('cd-'+key, channel.overload > 0 ? 'OVERLOAD' : channel.mode === key ? 'CHANNELING' : 'HOLD');
     const debug = ui().querySelector<HTMLElement>('#debug-panel')!; debug.hidden = !this.debug;
-    debug.textContent = `FPS ${this.game.loop.actualFps.toFixed(0)} | fixed ${1 / B.step}Hz\ndistribution ${m.distribution.toFixed(3)} | protected ${protectedMass(p).toFixed(1)}\nmass error ${(m.combatMass - m.coreMass - m.fieldMass - m.orbitingStoredMass).toFixed(8)}\nchannel ${p.channel.mode ?? 'none'} | flux ${p.channel.flux.toFixed(1)} | melee ${p.melee.phase} ${p.melee.index + 1}\nseed ${B.seed} | bodies ${this.sim.actors.length} | debris ${this.sim.debris.length}`;
+    debug.textContent = `FPS ${this.game.loop.actualFps.toFixed(0)} | fixed ${1 / B.step}Hz\ndistribution ${m.distribution.toFixed(3)} | integrity ${p.integrity.current.toFixed(1)}\nmass error ${(m.combatMass - m.coreMass - m.fieldMass).toFixed(8)}\nchannel ${p.channel.mode ?? 'none'} | flux ${p.channel.flux.toFixed(1)} | melee ${p.melee.phase} ${p.melee.index + 1}\nseed ${B.seed} | bodies ${this.sim.actors.length} | debris ${this.sim.debris.length}`;
   }
 }
 export class TrainingScene extends ArenaScene { constructor() { super('TrainingScene', 'training'); } }

@@ -1,63 +1,47 @@
 # Cosmic Core
 
-A local first playable built from `cosmic_core_game_product_contract.md`. Phaser 3, strict TypeScript, Vite, vector art, and a seeded 60 Hz simulation. No backend or online multiplayer.
+A Phaser 3 / TypeScript combat game with a seeded 60 Hz simulation, three-room dungeon, local bot duel, and browser-local progression. See the current [combat contract 1.2](cosmic_core_game_product_contract_v1.2.md).
 
-## Run
+## Run and deploy
 
 Requires Node.js 22 or newer.
 
 ```sh
 npm ci
 npm run dev
-```
-
-Open the URL printed by Vite. A phone on the same network can use the host computer's LAN address with port 5173. Mobile gameplay requires landscape orientation.
-
-```sh
-npm run typecheck
-npm test
 npm run build
+npm test
 npx playwright install chromium
 npm run smoke
 ```
 
-## Play
+For Netlify, leave the base directory blank, use `npm run build`, and publish `dist`. No functions or environment variables are required. The build includes TypeScript validation.
 
-- **Training:** expand to gather orbiting debris, then aim and cast at the bot. The rival activates when you first cast or pulse, so you can practice movement/distribution first. Reset training restarts without changing progression.
-- **Frontier:** survive or bypass the first patrol (0–65 seconds), then the Leech/Wisp patrol (65–140 seconds). After 140 seconds, follow the directional marker to the purple challenge beacon. The Guardian arrives after 220 seconds once the beacon is reached. Defeat it, then enter the green extraction circle after 300 seconds. Extraction closes at 480 seconds.
-- **Orbital duel:** a deterministic bot at your effective division mass. Collapse wins. At four minutes, stability phase, protected Core mass, then controlled mass decide the result; an exact tie enters sudden death.
+## Controls and combat
 
-WASD moves; mouse aims; left click casts. Space applies a directional impulse, Q emits a mass pulse, E starts compression surge. Hold Shift to compress, Control to expand; the wheel adjusts distribution. Mobile uses independent thrust/aim sticks, redistribution controls, and three ability buttons. Releasing the aim stick stops firing. Pause also activates when the window loses focus.
+- WASD: move. Mouse: aim. Hold left click: three-hit melee chain.
+- Hold E / Pull: draw External Mass into the Core, contract the field, attract enemies, increase melee damage and protection, and slow movement.
+- Hold Q / Pulse: distribute Core Mass outward, expand the field, repel enemies, and increase mobility.
+- Release a channel to retain the current distribution. Both channels consume Flux; overload or interruption requires release before restarting.
+- Space: directional Impulse. R: launch a captured orbit object.
+- Mobile: independent movement and aim/melee sticks, held Pull/Pulse buttons, and secondary ability buttons. Landscape is required.
 
-Mint debris is yours; pink debris belongs to a hostile Core; amber fragments are ejected mass; capture rings indicate a contested/capturing object. An exposed Core has flashing white/red rings and can collapse from the next direct hit. Compression surge has a gold ring and can be interrupted by Mass Pulse.
+**Total Mass = Core Mass + External Mass.** Core Integrity is HP: damage reduces it, exposure begins below 20%, and zero causes Collapse. Damage does not consume mass. Compression increases damage resistance using `100 / (100 + Core Mass)`.
 
-Extraction banks the configured share of unbanked mass. Failure/abandonment loses run mass and 1% of permanent mass, capped at 10 and protected by the evolution floor. Training never updates the profile; PvP gains do not become permanent. Profiles use versioned localStorage and are specific to browser and origin. Storage failures are reported on the results screen.
+Melee is the primary damage source. Deliberate attacks receive a short step toward a nearby target in the facing cone; mobile has slightly wider aim assistance. Orange numbers show direct Core hits, white numbers show other damage. Overhead bars show remaining Integrity, and the three HUD markers light on connected melee-chain attacks.
 
-## Structure and tuning
+Pillars block movement, melee, and channels. Break mint crystals with melee to release collectible mass. Blue gravity wells attract bodies and debris; violet entropy zones damage Integrity and erode loose debris. Pulse and melee can cause impact damage against walls and pillars. Captured orbit objects are separate ammunition, not a third partition of Total Mass; launching them does not lower Core Mass.
 
-- `src/game/config/balance.ts`: physics, distributions, thresholds, abilities, timing, bots, and rewards; validated at boot.
-- `src/game/content/arena.ts`: hazard and objective positions shared by simulation and rendering.
-- `src/game/content/content.ts`: divisions and the locked evolution placeholder.
-- `src/game/systems/`: pure simulation, mass, gravity, orbit, damage, stability, and ability systems.
-- `src/game/input/ActionInput.ts`: centralized bindings and shared abstract actions for keyboard, pointer, and touch.
-- `src/game/scenes/Scenes.ts`: boot, menu, training, mission, duel, results, vector rendering, and responsive HUD.
-- `src/game/persistence/Profile.ts`: versioned profile store, reward settlement, and protected loss.
+## Modes
 
-Owned orbit mass is included in combat mass. Launch/release subtracts it; capture adds it. Damage produces collectible fragments. Redistribution only partitions available non-orbit mass. Stability recovery reallocates existing mass rather than creating mass.
+- **Training:** free practice with a rival that activates when you first attack or channel. Reset restarts without changing your profile.
+- **The Silent Orbit:** clear three compact rooms and enter each green gate. A cleared gate restores Core Integrity for the next room. Hold a channel near the Guardian to break its anchor, then attack during the opening. The final exit banks rewards.
+- **Orbital duel:** fight a deterministic local bot in a compact walled arena. The camera follows both fighters. Collapse wins; at four minutes, remaining Integrity percentage then Total Mass break ties. Exact ties enter sudden death.
 
-## Contract implementation and verification
+Dungeon extraction banks rewards. Failure or abandonment loses unbanked rewards and 1% of permanent mass, capped at 10 and protected by the evolution floor. Training does not update progression; PvP gains do not become permanent. Profiles are stored in localStorage and are specific to the browser and site origin. There is no online multiplayer or backend.
 
-Milestones 0–3 are implemented in sequence: scaffold/forces/orbits; combat sandbox; mission/progression; local bot duel. No staged approval was requested. Section 16 remains the scope boundary; future evolutions and online systems remain excluded.
+## Verification
 
-Automated coverage includes mass conservation during seeded combat, smooth redistribution, natural capture of at least five debris objects, orbit release accounting, gravity overlap, caps, two-hit collapse, recovery, protected loss, reward settlement, deterministic timeout, mission gates/Guardian/extraction, and config validation. Browser smoke tests cover desktop redistribution, pause/reset, result settlement and reload persistence, plus mobile landscape controls and portrait protection. Screenshots are written to `test-results/`.
+Unit/integration tests cover conservation, channel endpoints and overload, Integrity resistance and Collapse, melee arcs and timing, line-of-sight blocking, wall impacts, crystals, orbit ammunition, mobile aim assistance, deterministic simulation, dungeon completion, and progression. Playwright covers desktop controls, mobile holds and independent release, pause/reset, persistence, and collection/dungeon screens. Screenshots go to `test-results/`.
 
-Implementation choices and remaining acceptance work:
-
-- Physics authority is the pure fixed-step model. Phaser Arcade bodies mirror actor collision shapes; force integration and collision response are custom for deterministic tests. This is a deliberate refinement of the contract's Arcade-plus-custom-physics approach.
-- Recovery uses protected Core mass minus recent damage trauma. With insufficient total mass to meet the protection threshold, exposure can recur; recovery never manufactures mass.
-- First evolution remains locked pending base combat approval. No choice is offered prematurely.
-- Automated mission tests verify objective gating and settlement, not a human-playtested 5–8 minute victory. Enemy pressure, extraction pacing, compression/expansion balance, and touch comfort still require playtest evidence.
-- Desktop Chromium and a mobile-emulated Chromium landscape viewport were smoke tested. No physical Android/iOS device has been measured. A desktop headless capture reported approximately 30 FPS; it is not representative mobile performance evidence or a 60 FPS claim. The simulation limits catch-up steps to avoid runaway work after slow frames, and the camera fits expanded Fields within the viewport using bounded zoom.
-- The production bundle includes Phaser (approximately 353 KB gzip in the initial build); Vite reports a large-chunk warning. Final art/audio and production loading optimization are not part of this slice.
-
-The first playable is ready for hands-on review, not a claim that the contract's subjective playtest and representative-device acceptance criteria have already been met.
+Visual checks use desktop and mobile-emulated Chromium. Physical-device performance and human balance testing remain necessary. Vite reports its existing large-bundle warning for Phaser.

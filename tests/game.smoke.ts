@@ -4,11 +4,11 @@ test('desktop menu, live redistribution, pause, reset, results and local save', 
   await page.setViewportSize({ width: 1440, height: 900 }); await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Make space. Become mass.' })).toBeVisible();
   await page.screenshot({ path: 'test-results/menu.png' });
-  await page.locator('[data-mode="training"]').click(); await expect(page.locator('#stability')).toHaveText('● CORE STABLE');
+  await page.locator('[data-mode="training"]').click(); await expect(page.locator('#integrity')).toContainText('CORE INTEGRITY 100 / 100');
   await page.getByRole('button', { name: 'Telemetry' }).click();
-  await page.keyboard.down('Shift'); await page.waitForTimeout(1600); await page.keyboard.up('Shift');
+  await page.keyboard.down('e'); await page.waitForTimeout(1600); await page.keyboard.up('e');
   await expect(page.locator('#debug-panel')).toContainText('distribution 1.000');
-  await page.keyboard.down('Control'); await page.waitForTimeout(1600); await page.keyboard.up('Control');
+  await page.keyboard.down('q'); await page.waitForTimeout(1600); await page.keyboard.up('q');
   await expect(page.locator('#debug-panel')).toContainText('distribution 0.000');
   await page.screenshot({ path: 'test-results/training-desktop.png' });
   await page.getByRole('button', { name: 'Pause', exact: false }).click(); await expect(page.getByRole('heading', { name: 'Orbit paused' })).toBeVisible();
@@ -21,8 +21,8 @@ test('desktop menu, live redistribution, pause, reset, results and local save', 
 test('mobile landscape touch controls and portrait guard', async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true });
   const page = await context.newPage(); await page.goto('/'); await page.locator('[data-mode="training"]').tap();
-  await expect(page.locator('[data-stick="move"]')).toBeVisible(); await expect(page.locator('[data-action="compress"]')).toBeVisible();
-  const button = page.locator('[data-action="compress"]'), box = await button.boundingBox();
+  await expect(page.locator('[data-stick="move"]')).toBeVisible(); await expect(page.locator('[data-action="pull"]')).toBeVisible();
+  const button = page.locator('[data-action="pull"]'), box = await button.boundingBox();
   await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2); await page.mouse.down(); await page.waitForTimeout(1400); await page.mouse.up();
   await page.screenshot({ path: 'test-results/training-mobile.png' });
   await page.setViewportSize({ width: 390, height: 844 }); await expect(page.locator('#rotate')).toBeVisible(); await context.close();
@@ -53,6 +53,19 @@ test('mobile holds a channel while moving and releases independently', async ({ 
   const touches=[{id:1,x:move.x+move.width/2,y:move.y+move.height/2},{id:2,x:pull.x+pull.width/2,y:pull.y+pull.height/2}];
   await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:touches});touches[0].x+=28;await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:touches});
   await expect(page.locator('#channel-state')).toContainText('MAXIMUM');await page.screenshot({path:'test-results/m4-pull-mobile.png'});
-  await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[touches[0]]});await expect(page.locator('#channel-state')).toContainText('FLUX READY');
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[touches[1]]});await expect(page.locator('#channel-state')).toContainText('FLUX READY');
   await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});expect(errors).toEqual([]);await context.close();
+});
+
+test('melee visibly lowers rival integrity and keeps the new HUD available', async ({ page }) => {
+  const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
+  await page.setViewportSize({width:1440,height:900});await page.goto('/');
+  await page.locator('[data-mode="training"]').click();
+  await expect(page.locator('[data-action="compress"]')).toHaveCount(0);
+  await expect(page.locator('#melee-chain i')).toHaveCount(3);
+  await page.mouse.move(1100,450);await page.keyboard.down('d');await page.mouse.down();
+  await page.waitForTimeout(900);await page.keyboard.up('d');
+  await expect(page.locator('#rival')).toContainText(/BOT \/ [1-9][0-9]? HP/,{timeout:10000});
+  await page.keyboard.up('d');await page.screenshot({path:'test-results/core-integrity-combat.png'});
+  await page.mouse.up();expect(errors).toEqual([]);
 });

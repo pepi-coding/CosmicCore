@@ -1,17 +1,17 @@
 import { B } from '../config/balance';
 import { C } from '../config/combatV4';
 import { newChannel, channelForce, interruptChannel, lineOfSight, type Obstacle } from './ChannelSystem';
-import { newMelee, withinMeleeArc, meleeDamage, attackSpec } from './MeleeSystem';
+import { newMelee, withinMeleeArc, meleeDamage, attackSpec, meleeReach } from './MeleeSystem';
 import { ButtonTracker } from '../input/ActionState';
 import { modifiersFor } from '../content/manifestations';
 import { dungeon } from '../content/dungeon';
-import { arenaContent as map, asteroidAt } from '../content/arena';
+import { arenaContent as map } from '../content/arena';
 import { divisionFor } from '../content/content';
-import { createMass, redistribute, recover, eject } from './MassSystem';
+import { createMass, redistribute, recover } from './MassSystem';
 import { fieldRadius, gravity } from './GravitySystem';
 import { orbit, release, tryCapture } from './OrbitSystem';
 import { damage } from './DamageSystem';
-import { tickStability, timeout } from './StabilitySystem';
+import { timeout } from './IntegritySystem';
 import { abilities } from './AbilitySystem';
 import { clamp, distance, seeded, unit, type Actions, type Actor, type Debris, type Kind, type Mode, type Result } from './types';
 
@@ -20,6 +20,8 @@ export class Simulation {
   result: Result | null = null; random: () => number; nextId = 1; killed = new Set<number>(); trainingEngaged = false;
   effects: { x: number; y: number; radius: number; life: number; hostile: boolean }[] = [];
   trackers = new Map<number, ButtonTracker>(); hitEvents: {source: number; target: number; heavy: boolean; x: number; y: number; serial: number}[] = []; hitSerial = 0;
+  damageEvents: { x: number; y: number; amount: number; critical: boolean; time: number; target: number }[] = [];
+  crystals: { x: number; y: number; radius: number; hp: number }[] = [];
   room = 0; roomCleared = false; obstacles: Obstacle[] = [];
   readonly player: Actor; readonly effectiveMass: number;
   constructor(public mode: Mode, public maximumMass: number, seed: number = B.seed, options: { manifestationId?: string; level?: number } = {}) {
@@ -32,10 +34,10 @@ export class Simulation {
       const angle = this.random() * Math.PI * 2, radius = i < B.debris.initialNearCount ? B.debris.nearMin + this.random() * B.debris.nearSpread : B.debris.farMin + this.random() * B.debris.farSpread;
       this.debris.push(this.makeDebris(this.player.x + Math.cos(angle) * radius, this.player.y + Math.sin(angle) * radius, B.mass.debris, true));
     }
-    if (mode === 'pve') this.enterRoom(0);
+    if (mode === 'pve') this.enterRoom(0); else { this.obstacles = map.pillars.map(o => ({...o})); this.seedCrystals({x: 1250, y: 1100}); }
   }
   actor(kind: Kind, x: number, y: number, mass: number): Actor {
-    const a: Actor = { id: this.nextId++, kind, x, y, vx: 0, vy: 0, mass: createMass(kind === 'player' ? this.maximumMass : mass, mass), stability: { phase: 'stable', unstableRemainingMs: 0, instabilityCount: 0, trauma: 0 }, targetDistribution: .5, radius: fieldRadius(.5), cooldown: { cast: 0, impulse: 0, pulse: 0, surge: 0, contact: 0, orbit: 0 }, channel: newChannel(), melee: newMelee(), modifiers: {melee: 1, reach: 1, pull: 1, pulse: 1, fluxEfficiency: 1, fluxOnHit: 1}, manifestationId: 'vessel', hitPause: 0, hitTime: 0, deathTime: 0, guardBroken: 0, guardCharge: 0, channelUsed: false, meleeHits: 0, stagger: 0, cap: mass * B.mass.cap, angle: 0, alive: true };
+    const a: Actor = { id: this.nextId++, kind, x, y, vx: 0, vy: 0, mass: createMass(kind === 'player' ? this.maximumMass : mass, mass), integrity: { current: kind === 'player' || kind === 'bot' ? 100 : kind === 'guardian' ? 130 : 40, maximum: kind === 'player' || kind === 'bot' ? 100 : kind === 'guardian' ? 130 : 40 }, targetDistribution: .5, radius: fieldRadius(.5), cooldown: { cast: 0, impulse: 0, pulse: 0, surge: 0, contact: 0, orbit: 0 }, channel: newChannel(), melee: newMelee(), modifiers: {melee: 1, reach: 1, pull: 1, pulse: 1, fluxEfficiency: 1, fluxOnHit: 1}, manifestationId: 'vessel', hitPause: 0, hitTime: 0, deathTime: 0, guardBroken: 0, guardCharge: 0, channelUsed: false, meleeHits: 0, comboConnected: 0, impactWindow: 0, stagger: 0, cap: mass * B.mass.cap, angle: 0, alive: true };
     this.actors.push(a); this.trackers.set(a.id, new ButtonTracker()); return a;
   }
   makeDebris(x: number, y: number, mass: number, fresh = false): Debris {
@@ -47,9 +49,12 @@ export class Simulation {
     const d = this.makeDebris(a.x + Math.cos(angle) * B.combat.fragmentOffset, a.y + Math.sin(angle) * B.combat.fragmentOffset, mass);
     d.previousOwner = a.id; d.vx = Math.cos(angle) * B.combat.fragmentSpeed; d.vy = Math.sin(angle) * B.combat.fragmentSpeed; this.debris.push(d); return d;
   }
-  hit(a: Actor, amount: number, direct: boolean, melee = false): void {
-    if (this.mode === 'pve' && a.kind === 'guardian' && (a.guardBroken <= 0 || !melee)) return;
-    const removed = damage(a, amount, direct); if (removed > 0) { this.fragment(a, removed); a.hitTime = C.feedback.hitDuration; }
+  hit(a: Actor, amount: number, direct: boolean, melee = false): number {
+    if (this.mode === 'pve' && a.kind === 'guardian' && (a.guardBroken <= 0 || !melee)) return 0;
+    const actual = damage(a, amount, direct);
+    if (actual > 0 && !a.alive) a.deathTime = this.time;
+    if (actual > 0) { a.hitTime = C.feedback.hitDuration; this.damageEvents.push({x:a.x, y:a.y-55, amount:actual, critical:direct, time:this.time, target:a.id}); }
+    return actual;
   }
   pulseVisual(a: Actor): void { this.effects.push({ x: a.x, y: a.y, radius: a.radius, life: .5, hostile: a.id !== this.player.id }); }
   botActions(a: Actor): Actions {
@@ -74,27 +79,36 @@ export class Simulation {
     for (const a of this.actors) {
       if (!a.alive) continue;
       a.hitPause = Math.max(0, a.hitPause - dt);
-      if (a.hitPause > 0) { tickStability(a, dt); continue; }
-      const action = a === this.player ? input : this.botActions(a);
+      if (a.hitPause > 0) continue;
+      const action = { ...(a === this.player ? input : this.botActions(a)) };
       for (const key of Object.keys(a.cooldown) as (keyof Actor['cooldown'])[]) a.cooldown[key] = Math.max(0, a.cooldown[key] - dt);
       a.stagger = Math.max(0, a.stagger - dt); a.hitTime = Math.max(0, a.hitTime - dt); a.guardBroken = Math.max(0, a.guardBroken - dt);
       const buttons = action.buttons ?? this.trackers.get(a.id)!.sample({ primary: action.cast, impulse: action.impulse, pull: action.surge, pulse: action.pulse, orbit: action.orbit });
+      // Assist only a deliberate melee press/hold, within a limited facing cone.
+      if (buttons.primary.held && a.melee.phase === 'idle' && !a.channel.mode) {
+        const aim = Math.atan2(action.aim.y, action.aim.x);
+        const target = this.actors.filter(t => t !== a && t.alive && (a === this.player || t === this.player) && distance(a,t) < meleeReach(a)+38 && lineOfSight(a,t,this.obstacles) && Math.cos(Math.atan2(t.y-a.y,t.x-a.x)-aim) > (action.aimAssist ? .5 : .85)).sort((x,y)=>distance(a,x)-distance(a,y))[0];
+        if (target) { const n=unit({x:target.x-a.x,y:target.y-a.y}); action.aim={...n}; a.vx+=n.x*85; a.vy+=n.y*85; }
+      }
       abilities(a, action, buttons, this, dt);
-      a.targetDistribution = action.distribution;
+      a.targetDistribution = a.channel.mode === 'pull' ? 1 : a.channel.mode === 'pulse' ? 0 : a.mass.distribution;
       redistribute(a.mass, a.targetDistribution, dt, a.channel.overload > 0 ? C.flux.redistributionRate : 1);
       a.radius = fieldRadius(a.mass.distribution);
-      const accel = B.movement.thrust * (1 - a.mass.distribution * B.movement.inertia) * (a === this.player ? 1 : B.enemy.speed) * (a.stagger > 0 ? B.movement.staggerMultiplier : 1) * (a.channel.mode ? C.channel.movement : 1);
+      if (a.channel.mode) a.channel.maximumReached = a.channel.mode === 'pull' ? a.mass.distribution >= .999 : a.mass.distribution <= .001;
+      a.impactWindow = Math.max(0, a.impactWindow - dt);
+      const accel = B.movement.thrust * (1 - a.mass.distribution * B.movement.inertia) * (a === this.player ? 1 : B.enemy.speed) * (a.stagger > 0 ? B.movement.staggerMultiplier : 1) * (a.channel.mode === 'pull' ? .75 : 1);
       a.vx += action.move.x * accel * dt; a.vy += action.move.y * accel * dt;
       for (const other of this.actors) if (other !== a && other.alive) { const f = gravity(other, a, a.mass.combatMass); a.vx += f.x * dt * B.gravity.entityScale * (1 - a.mass.distribution * B.movement.inertia); a.vy += f.y * dt * B.gravity.entityScale * (1 - a.mass.distribution * B.movement.inertia); }
       a.vx *= Math.exp(-B.movement.drag * dt); a.vy *= Math.exp(-B.movement.drag * dt);
       const speed = Math.hypot(a.vx, a.vy); if (speed > B.movement.speed) { const limit = Math.max(B.movement.speed, speed * Math.exp(-dt * B.movement.overspeedDecay)); a.vx *= limit / speed; a.vy *= limit / speed; }
       a.x = clamp(a.x + a.vx * dt, B.movement.boundary, B.arena - B.movement.boundary); a.y = clamp(a.y + a.vy * dt, B.movement.boundary, B.arena - B.movement.boundary);
-      orbit(a, this.debris, dt); tickStability(a, dt);
+      orbit(a, this.debris, dt);
     }
     this.resolveChannels(dt);
     this.resolveMelee();
     this.moveDebris(dt);
     this.contacts();
+    this.environment(dt);
 
     for (const a of this.actors) if (!a.alive && !this.killed.has(a.id)) {
       this.killed.add(a.id); a.deathTime = this.time; for (const d of this.debris.filter(d => d.owner === a.id)) release(a, d);
@@ -106,9 +120,10 @@ export class Simulation {
     if (this.mode === 'pvp') {
       const opponent = this.actors[1];
       if (!opponent.alive) this.finish(true, 'Rival Core collapsed');
-      else if (this.time >= B.pvp.duration && !this.suddenDeath) { const winner = timeout(this.player, opponent); if (winner !== null) this.finish(winner === this.player.id, 'Time limit · stability tiebreak'); else this.suddenDeath = true; }
-      if (this.suddenDeath) for (const a of [this.player, opponent]) { const amount = eject(a.mass, B.pvp.suddenDeathDrain * dt, false); if (amount > 0) this.fragment(a, amount); a.stability.trauma += B.pvp.suddenDeathDrain * dt * B.pvp.suddenDeathTrauma; }
+      else if (this.time >= B.pvp.duration && !this.suddenDeath) { const winner = timeout(this.player, opponent); if (winner !== null) this.finish(winner === this.player.id, 'Time limit · integrity tiebreak'); else this.suddenDeath = true; }
+      if (this.suddenDeath) for (const a of [this.player, opponent]) this.hit(a, B.pvp.suddenDeathDrain * dt, false);
     }
+    this.damageEvents = this.damageEvents.filter(e => this.time - e.time < .85);
     this.hitEvents = this.hitEvents.slice(-20);
     this.effects = this.effects.filter(e => (e.life -= dt) > 0);
   }
@@ -150,6 +165,7 @@ export class Simulation {
       for (const target of this.actors) if (target !== source && target.alive) {
         const f = channelForce(source, target, target.mass.combatMass, this.obstacles);
         target.vx += f.x * dt; target.vy += f.y * dt;
+        if (source.channel.mode === 'pulse' && (f.x || f.y)) target.impactWindow = .4;
         if (source.channel.mode === 'pull' && (f.x !== 0 || f.y !== 0) && distance(source, target) < C.channel.captureRadius) { const damping = Math.exp(-C.channel.captureDamping * dt); target.vx *= damping; target.vy *= damping; }
         if (source === this.player && target.kind === 'guardian' && this.mode === 'pve' && (f.x !== 0 || f.y !== 0)) {
           target.guardCharge += dt;
@@ -166,12 +182,14 @@ export class Simulation {
         source.melee.hits.push(target.id);
         if (this.mode === 'pve' && target.kind === 'guardian' && target.guardBroken <= 0) continue;
         const heavy = source.melee.index === 2;
-        this.hit(target, meleeDamage(source), true, true); source.meleeHits++;
+        this.hit(target, meleeDamage(source), true, true); source.meleeHits++; source.comboConnected |= 1 << source.melee.index;
         source.hitPause = target.hitPause = heavy ? C.melee.heavyHitStop : C.melee.hitStop;
         source.channel.flux = Math.min(C.flux.max, source.channel.flux + C.flux.meleeRestore * source.modifiers.fluxOnHit);
         const n = unit({ x: target.x - source.x, y: target.y - source.y });
-        const force = C.melee.knockback * attackSpec(source).force * (1 + source.mass.distribution) * Math.min(1.4, source.mass.combatMass / Math.max(1, target.mass.combatMass));
-        target.vx += n.x * force; target.vy += n.y * force;
+        const momentum = 1 + clamp(Math.hypot(source.vx,source.vy)/C.melee.momentumSpeed,0,1)*C.melee.momentumCap;
+        const force = C.melee.knockback * attackSpec(source).force * (1 + source.mass.distribution) * momentum * Math.min(1.4, source.mass.combatMass / Math.max(1, target.mass.combatMass));
+        target.vx += n.x * force; target.vy += n.y * force; target.impactWindow = .4;
+        source.vx -= n.x * 18; source.vy -= n.y * 18;
         target.stagger = (heavy ? C.melee.heavyStagger : C.melee.stagger) * (1 + source.mass.distribution);
         if (heavy) interruptChannel(target.channel);
         this.hitEvents.push({ source: source.id, target: target.id, heavy, x: target.x, y: target.y, serial: ++this.hitSerial });
@@ -185,11 +203,43 @@ export class Simulation {
       const n = unit({ x: a.x - p.x, y: a.y - p.y }); a.vx += n.x * B.combat.contactPush; a.vy += n.y * B.combat.contactPush; p.vx -= n.x * B.combat.contactPush; p.vy -= n.y * B.combat.contactPush;
     }
   }
+  seedCrystals(center: {x: number; y: number}): void {
+    this.crystals = [{x:center.x-80,y:center.y-130,radius:20,hp:24},{x:center.x+70,y:center.y+130,radius:20,hp:24}];
+  }
+  environment(dt: number): void {
+    const room = this.mode === 'pve' ? dungeon.rooms[this.room] : null;
+    const half = dungeon.roomHalfSize;
+    const bounds = room ? {left:room.center.x-half,right:room.center.x+half,top:room.center.y-half,bottom:room.center.y+half} : this.mode === 'pvp' ? map.duelBounds : {left:B.movement.boundary,right:B.arena-B.movement.boundary,top:B.movement.boundary,bottom:B.arena-B.movement.boundary};
+    for (const a of this.actors) if (a.alive) {
+      const impact = (speed: number) => { if (a.impactWindow > 0 && speed > 100) { this.hit(a, Math.min(24,speed*.045), false); a.impactWindow=0; } };
+      if (a.x <= bounds.left || a.x >= bounds.right) { impact(Math.abs(a.vx)); a.x=clamp(a.x,bounds.left,bounds.right); a.vx *= -.25; }
+      if (a.y <= bounds.top || a.y >= bounds.bottom) { impact(Math.abs(a.vy)); a.y=clamp(a.y,bounds.top,bounds.bottom); a.vy *= -.25; }
+      for (const o of this.obstacles) {
+        const d=distance(a,o), radius=o.radius+B.combat.coreRadius;
+        if (d<radius) { const n=unit({x:a.x-o.x,y:a.y-o.y}), inward=-(a.vx*n.x+a.vy*n.y); impact(inward); a.x=o.x+n.x*radius;a.y=o.y+n.y*radius; if(inward>0){a.vx+=n.x*inward*1.25;a.vy+=n.y*inward*1.25;} }
+      }
+      if (!room) {
+        const d=distance(a,map.well); if(d<map.well.radius){const n=unit({x:map.well.x-a.x,y:map.well.y-a.y});a.vx+=n.x*B.pve.wellForce*dt;a.vy+=n.y*B.pve.wellForce*dt;}
+        if(distance(a,map.entropy)<map.entropy.radius)this.hit(a,B.pve.hazardDamage*dt,false);
+      }
+      if (a.melee.phase==='active' && a.hitPause<=0) this.crystals.forEach((crystal,i)=>{
+        const id=-i-1;
+        if(crystal.hp>0&&!a.melee.hits.includes(id)&&withinMeleeArc(a,crystal)&&lineOfSight(a,crystal,this.obstacles)){
+          a.melee.hits.push(id);crystal.hp-=meleeDamage(a);a.hitPause=.06;
+          this.damageEvents.push({x:crystal.x,y:crystal.y,amount:meleeDamage(a),critical:false,time:this.time,target:id});
+          if(crystal.hp<=0){for(let j=0;j<4;j++)this.debris.push(this.makeDebris(crystal.x+Math.cos(j*Math.PI/2)*26,crystal.y+Math.sin(j*Math.PI/2)*26,2.5,true));this.effects.push({x:crystal.x,y:crystal.y,radius:75,life:.5,hostile:false});}
+        }
+      });
+    }
+    if (!room) for(const d of this.debris) if(d.owner===null){const r=distance(d,map.well);if(r<map.well.radius){const n=unit({x:map.well.x-d.x,y:map.well.y-d.y});d.vx+=n.x*B.pve.wellForce*dt;d.vy+=n.y*B.pve.wellForce*dt;}if(distance(d,map.entropy)<map.entropy.radius)d.life-=dt*B.pve.entropyDecay;}
+  }
   enterRoom(index: number): void {
     this.room = index; this.phase = index; this.roomCleared = false;
     const room = dungeon.rooms[index];
     for (const d of this.debris) if (d.owner === this.player.id) release(this.player, d);
     this.actors = [this.player]; this.debris = []; this.obstacles = room.obstacles.map(o => ({ ...o }));
+    this.seedCrystals(room.center);
+    this.player.integrity.current = this.player.integrity.maximum;
     this.player.x = room.center.x - 140; this.player.y = room.center.y; this.player.vx = 0; this.player.vy = 0;
     for (let i = 0; i < room.enemies.length; i++) this.actor(room.enemies[i], room.center.x + room.offsets[i].x, room.center.y + room.offsets[i].y, room.masses[i]);
     for (let i = 0; i < 12; i++) { const angle = this.random() * Math.PI * 2; this.debris.push(this.makeDebris(room.center.x + Math.cos(angle) * 180, room.center.y + Math.sin(angle) * 180, B.mass.debris, true)); }
@@ -203,10 +253,9 @@ export class Simulation {
     this.roomCleared = !this.actors.some(a => a !== this.player && a.alive);
     for (const a of this.actors) if (a.alive) {
       a.x = clamp(a.x, room.center.x - half, room.center.x + half); a.y = clamp(a.y, room.center.y - half, room.center.y + half);
-      for (const o of this.obstacles) { const d = distance(a, o), radius = o.radius + B.combat.coreRadius; if (d < radius) { const n = unit({x: a.x - o.x, y: a.y - o.y}); a.x = o.x + n.x * radius; a.y = o.y + n.y * radius; a.vx *= .5; a.vy *= .5; } }
     }
     if (room.hazard) {
-      if (distance(this.player, room.hazard) < room.hazard.radius) this.player.stability.trauma += B.pve.hazardDamage * dt;
+      if (distance(this.player, room.hazard) < room.hazard.radius) this.hit(this.player, B.pve.hazardDamage * dt, false);
       for (const d of this.debris) if (d.owner === null && distance(d, room.hazard) < room.hazard.radius) d.life -= dt * B.pve.entropyDecay;
     }
     for (const a of this.actors) if (a.alive && a.kind === 'leech' && distance(a, this.player) < this.player.radius && !this.player.channel.mode) this.player.mass.unbankedMass = Math.max(0, this.player.mass.unbankedMass - B.pve.leechDrain * dt);

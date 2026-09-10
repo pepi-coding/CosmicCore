@@ -11,6 +11,7 @@ export function withinMeleeArc(a: Actor, target: Vec): boolean {
   return Math.hypot(dx, dy) <= meleeReach(a) && difference <= attackSpec(a).arc / 2 + (1 - a.mass.distribution) * C.melee.arcExpansion;
 }
 export function startMelee(a: Actor): void {
+  if (a.melee.index === 0) a.comboConnected = 0;
   const m = a.melee; m.phase = 'windup'; m.elapsed = 0; m.buffer = 0; m.hits = []; m.angle = a.angle; m.missed = false; m.serial++;
   if (m.index === 1) { a.vx += Math.cos(m.angle) * C.melee.advance; a.vy += Math.sin(m.angle) * C.melee.advance; }
 }
