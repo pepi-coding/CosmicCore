@@ -1,0 +1,8 @@
+* Mass objects the more compressed mass they have the more "power" they have
+* They lose "power" as they use pulses as attack (can be other thing)
+* Could add some color coded types of objects
+* Can train to become stronger like in DBZ
+* They way they release their power or compressed energy may vary according to type
+or color or both
+* Player can have some sort of Hierarchial names based on Astronomical entities like planets. For example, a player can reach
+Blackhole Level or some other name

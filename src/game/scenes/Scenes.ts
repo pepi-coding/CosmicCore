@@ -1,0 +1,194 @@
+import Phaser from 'phaser';
+import { B, validateBalance } from '../config/balance';
+import { C } from '../config/combatV4';
+import { economy } from '../config/economy';
+import { dungeon } from '../content/dungeon';
+import { manifestationFor } from '../content/manifestations';
+import { enterDungeon, grantDungeonRewards } from '../systems/EconomySystem';
+import { VesselRig } from '../render/VesselRig';
+import { CombatAudio } from '../audio/CombatAudio';
+import { meleeReach, attackSpec } from '../systems/MeleeSystem';
+import { divisionFor } from '../content/content';
+import { arenaContent as map, asteroidAt } from '../content/arena';
+import { ActionInput } from '../input/ActionInput';
+import { LocalProfileStore, settle } from '../persistence/Profile';
+import { Simulation } from '../systems/Simulation';
+import { protectedMass } from '../systems/StabilitySystem';
+import { slots } from '../systems/OrbitSystem';
+import { seeded, type Mode, type Result } from '../systems/types';
+
+export const ui = () => document.querySelector<HTMLDivElement>('#ui')!;
+export const store = new LocalProfileStore();
+export const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+const sceneFor = { training: 'TrainingScene', pve: 'PvEMissionScene', pvp: 'PvPArenaScene' };
+export function backdrop(scene: Phaser.Scene): void {
+  const g = scene.add.graphics(), random = seeded(B.seed);
+  g.fillStyle(0x080c19); g.fillRect(0, 0, 4000, 3000);
+  for (let i = 0; i < 230; i++) { g.fillStyle(i % 5 === 0 ? 0x9bbdd1 : 0x647188, random() * .5 + .1); g.fillCircle(random() * 2000, random() * 1200, random() * 1.6 + .4); }
+  for (let r = 320; r > 0; r -= 12) { g.fillStyle(0x237e80, .014); g.fillCircle(1000, 500, r); }
+  g.lineStyle(1, 0x74dec9, .18); g.strokeCircle(1000, 500, 190); g.strokeEllipse(1000, 500, 520, 170);
+  g.fillStyle(0x91ffe3); g.fillCircle(1000, 500, 22);
+}
+export class BootScene extends Phaser.Scene {
+  constructor() { super('BootScene'); }
+  preload(): void { VesselRig.preload(this); }
+  create(): void { validateBalance(); this.scene.start('MainMenuScene'); }
+}
+export class MainMenuScene extends Phaser.Scene {
+  constructor() { super('MainMenuScene'); }
+  create(): void {
+    backdrop(this); const profile = store.load();
+    ui().innerHTML = `<main class="menu"><header><a class="brand">◈ <span>COSMIC CORE</span></a><span class="version">COMBAT & COLLECTION / 1.1</span></header><section class="hero"><div class="eyebrow"><span class="dot"></span> A SMALL CORE. AN UNLIMITED COSMOS.</div><h1>Make space.<br><em>Become mass.</em></h1><p>Expand to capture. Compress to strike.<br>Everything you gather is everything you stand to lose.</p><div class="profile"><div class="core-icon">✦</div><div><small>YOUR CORE / ${divisionFor(profile.maximumMass).name.toUpperCase()}</small><strong>${profile.maximumMass.toFixed(1)} <span>MAXIMUM MASS</span></strong></div><span class="saved">● LOCAL PROFILE</span></div></section><nav class="modes"><button data-mode="training"><span class="mode-no">01 / LEARN THE PULL</span><strong>Training sandbox <b>↗</b></strong><span>Find your orbit. Master your distribution.</span><small>FREE EXPLORATION · NO PROGRESSION RISK</small></button><button data-mode="pve" class="featured"><span class="mode-no">02 / GATHER & RETURN</span><strong>The Silent Orbit <b>↗</b></strong><span>Three rooms. One anchored Core. Earn your return.</span><small>THREE-ROOM DUNGEON · NORMAL</small></button><button data-mode="pvp"><span class="mode-no">03 / CORE AGAINST CORE</span><strong>Orbital duel <b>↗</b></strong><span>Control the field against a deterministic rival.</span><small>LOCAL BOT · 1V1 · 4 MINUTES</small></button></nav><footer><span>WASD move <i>·</i> SHIFT compress <i>·</i> CTRL expand <i>·</i> Mouse aim & melee</span><span>◇ Planetary evolution <strong>LOCKED</strong></span></footer></main>`;
+    ui().querySelectorAll<HTMLButtonElement>('[data-mode]').forEach(button => button.onclick = () => this.scene.start(button.dataset.mode === 'pve' ? 'DungeonSelectScene' : sceneFor[button.dataset.mode as Mode]));
+    const collection = document.createElement('button'); collection.id = 'collection'; collection.className = 'quiet'; collection.textContent = 'Manifestations ↗'; collection.onclick = () => this.scene.start('CollectionScene'); ui().querySelector('header')!.append(collection);
+  }
+}
+class ArenaScene extends Phaser.Scene {
+  sim!: Simulation; inputActions!: ActionInput; graphics!: Phaser.GameObjects.Graphics; stars!: Phaser.GameObjects.Graphics;
+  accumulator = 0; hudTimer = 0; finished = false; paused = false; debug = false; sprites = new Map<number, Phaser.GameObjects.Zone>();
+  rig!: VesselRig; audio!: CombatAudio; lastHit = 0; resultDelay = 0; renderTime = 0;
+  constructor(key: string, private mode: Mode) { super(key); }
+  create(): void {
+    this.accumulator = 0; this.hudTimer = 0; this.finished = false; this.paused = false; this.sprites.clear();
+    const profile = store.load();
+    if (this.mode === 'pve' && !enterDungeon(profile)) { this.scene.start('DungeonSelectScene'); return; }
+    if (this.mode === 'pve' && economy.energyEnabled) store.save(profile);
+    this.sim = new Simulation(this.mode, profile.maximumMass, B.seed, { manifestationId: profile.equippedManifestation, level: profile.manifestationLevels[profile.equippedManifestation] });
+    this.rig = new VesselRig(this); this.audio = new CombatAudio(); this.lastHit = 0; this.resultDelay = 0; this.renderTime = 0;
+    this.physics.world.setBounds(0, 0, B.arena, B.arena);
+    // Arcade bodies mirror the fixed-step model for collision/debug integration. Forces and authoritative state remain pure.
+    this.graphics = this.add.graphics();
+    this.stars = this.add.graphics().setDepth(-1); const random = seeded(B.seed);
+    for (let i = 0; i < B.visuals.stars; i++) { this.stars.fillStyle(0x8ca3be, .2 + random() * .45); this.stars.fillCircle(random() * B.arena, random() * B.arena, .6 + random()); }
+    this.cameras.main.setBackgroundColor('#080c19');
+    this.inputActions = new ActionInput(this.game.canvas);
+    ui().innerHTML = `<div class="hud"><header class="hud-top"><div class="hud-title"><span class="brand">◈ COSMIC CORE</span><small>${this.mode === 'pve' ? 'THE SILENT ORBIT / NORMAL' : this.mode === 'pvp' ? `LOCAL BOT DUEL / ${divisionFor(this.sim.maximumMass).name.toUpperCase()}` : 'TRAINING / NO PROGRESSION RISK'}</small></div><div id="objective"></div><button id="pause" class="quiet">Ⅱ Pause</button><button id="exit" class="quiet">Exit ↗</button></header><div class="mass-panel"><small>CONTROLLED MASS</small><strong id="mass-value"></strong><div class="distribution"><i id="core-meter"></i><i id="field-meter"></i></div><div class="split-label"><span id="core-value"></span><span id="field-value"></span></div><div id="stability"></div><div id="bank"></div></div><div id="rival"></div><div class="mission-note" id="mission-note"></div><div class="ability-bar"><button data-action="impulse"><kbd>SPACE</kbd><span>↗ Impulse</span><small id="cd-impulse">READY</small></button><button data-action="pulse"><kbd>Q</kbd><span>◎ Mass pulse</span><small id="cd-pulse">READY</small></button><button data-action="surge"><kbd>E</kbd><span>✦ Surge</span><small id="cd-surge">READY</small></button></div><div class="desktop-hints">WASD <span>thrust</span> · Mouse <span>melee</span> · SHIFT <span>compress</span> · CTRL <span>expand</span><button id="reset">Reset training</button><button id="debug">Telemetry</button></div><div class="touch-controls"><div class="stick" data-stick="move"><i></i><span>THRUST</span></div><div class="redistribute"><button data-action="expand">⊕ Expand</button><button data-action="compress">⊙ Compress</button></div><div class="stick" data-stick="aim"><i></i><span>AIM / CAST</span></div></div><pre id="debug-panel" hidden></pre><div id="pause-overlay" hidden><h2>Orbit paused</h2><p>Resume when you’re ready.</p><button id="resume">Resume →</button></div></div>`;
+    const massPanel = ui().querySelector('.mass-panel')!;
+    massPanel.insertAdjacentHTML('beforeend', '<div class="flux-header"><span>FLUX</span><span id="flux-value">100</span></div><div class="flux-track"><i id="flux-meter"></i></div><div id="channel-state">READY</div>');
+    ui().querySelector('.ability-bar')!.innerHTML = '<button data-action="impulse"><kbd>SPACE</kbd><span>↗ Impulse</span><small id="cd-impulse">READY</small></button><button data-action="pulse"><kbd>HOLD Q</kbd><span>◎ Discharge</span><small id="cd-pulse">HOLD</small></button><button data-action="pull"><kbd>HOLD E</kbd><span>◉ Pull</span><small id="cd-pull">HOLD</small></button><button data-action="orbit"><kbd>R</kbd><span>◇ Orbit cast</span><small id="cd-orbit">READY</small></button>';
+    ui().querySelector('[data-stick="aim"] span')!.textContent = 'AIM / MELEE';
+    this.inputActions.attachTouch(ui());
+    const sound = document.createElement('button'); sound.id = 'sound'; sound.className = 'quiet'; sound.textContent = 'Sound on'; sound.onclick = () => { this.audio.enabled = !this.audio.enabled; sound.textContent = this.audio.enabled ? 'Sound on' : 'Sound off'; }; ui().querySelector('.hud-top')!.append(sound);
+    if (this.mode !== 'training') {
+      const exit = ui().querySelector<HTMLButtonElement>('#exit')!;
+      exit.textContent = 'Abandon ↗'; exit.title = 'Lose unbanked run mass and apply the protected 1% permanent penalty.';
+    }
+    ui().querySelector<HTMLButtonElement>('#exit')!.onclick = () => { if (this.mode === 'training') this.scene.start('MainMenuScene'); else { this.sim.finish(false, 'Run abandoned'); this.complete(); } };
+    ui().querySelector<HTMLButtonElement>('#pause')!.onclick = () => this.togglePause();
+    ui().querySelector<HTMLButtonElement>('#resume')!.onclick = () => this.togglePause();
+    ui().querySelector<HTMLButtonElement>('#reset')!.hidden = this.mode !== 'training';
+    ui().querySelector<HTMLButtonElement>('#reset')!.onclick = () => this.scene.restart();
+    ui().querySelector<HTMLButtonElement>('#debug')!.onclick = () => { this.debug = !this.debug; };
+    const blur = () => { if (!this.paused) this.togglePause(); }; window.addEventListener('blur', blur);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => { this.inputActions.destroy(); this.rig.destroy(); this.audio.destroy(); window.removeEventListener('blur', blur); });
+    this.updateHUD();
+  }
+  togglePause(): void { this.paused = !this.paused; this.inputActions.clear(); ui().querySelector<HTMLElement>('#pause-overlay')!.hidden = !this.paused; }
+  update(_time: number, delta: number): void {
+    if (this.finished) return;
+    const portrait = matchMedia('(pointer: coarse) and (orientation: portrait)').matches;
+    if (!this.paused && !portrait && !this.sim.result) {
+      this.accumulator += Math.min(delta / 1000, B.step * B.maxSteps);
+      while (this.accumulator >= B.step) { this.sim.step(this.inputActions.sample({ x: this.scale.width / 2, y: this.scale.height / 2 }, B.step)); this.accumulator -= B.step; }
+    }
+    this.renderWorld();
+    this.audio.update(this.sim.player.channel, this.paused || portrait || !!this.sim.result);
+    for (const e of this.sim.hitEvents) if (e.serial > this.lastHit) { this.lastHit = e.serial; if (e.source === this.sim.player.id || e.target === this.sim.player.id) { this.audio.impact(e.heavy); if (e.heavy) this.cameras.main.shake(C.melee.heavyShakeMs, C.melee.heavyShake); } }
+    this.hudTimer += delta / 1000; if (this.hudTimer >= B.visuals.hudInterval) { this.hudTimer = 0; this.updateHUD(); }
+    if (this.sim.result) { this.resultDelay += delta / 1000; if (this.resultDelay >= C.feedback.victoryDuration) this.complete(); }
+  }
+  complete(): void {
+    if (this.finished || !this.sim.result) return; this.finished = true;
+    const result = this.sim.result, profile = store.load(); let saved = true;
+    if (this.mode !== 'training') {
+      if (this.mode === 'pve' && result.won) { const reward = grantDungeonRewards(profile, B.seed, result.duration); result.gained += reward.mass; Object.assign(result, { grade: reward.grade, materials: reward.materials, currency: reward.currency, firstClear: reward.firstClear, firstClearMass: reward.firstClearMass, dungeonId: dungeon.id }); }
+      Object.assign(result, settle(profile, result.won, result.gained, this.mode === 'pve')); saved = store.save(profile);
+    }
+    this.scene.start('ResultsScene', { result, mode: this.mode, saved });
+  }
+  renderWorld(): void {
+    const g = this.graphics, p = this.sim.player, cam = this.cameras.main;
+    const desired = Phaser.Math.Clamp(Math.min(this.scale.width * .68, this.scale.height * .75) / (p.radius * 2 + 80), B.visuals.zoomMin, B.visuals.zoomMax);
+    cam.setZoom(Phaser.Math.Linear(cam.zoom, desired, .04)); cam.centerOn(p.x, p.y);
+    g.clear(); g.lineStyle(2, 0x364965, .5); g.strokeRect(20, 20, B.arena - 40, B.arena - 40);
+    g.lineStyle(1, 0x22314b, .23); for (let i = 0; i <= B.arena; i += 100) { g.lineBetween(i, 0, i, B.arena); g.lineBetween(0, i, B.arena, i); }
+    if (this.mode === 'pve') {
+      const room = dungeon.rooms[this.sim.room], half = dungeon.roomHalfSize;
+      g.fillStyle(this.sim.room === 2 ? 0x201c31 : 0x111e29, .65); g.fillRect(room.center.x - half, room.center.y - half, half * 2, half * 2);
+      g.lineStyle(3, 0x658a94, .6); g.strokeRect(room.center.x - half, room.center.y - half, half * 2, half * 2);
+      for (const o of this.sim.obstacles) { g.fillStyle(0x253340); g.fillCircle(o.x, o.y, o.radius); g.lineStyle(3, 0x5b788a); g.strokeCircle(o.x, o.y, o.radius); }
+      if (room.hazard) { g.fillStyle(0xa04ed9, .18); g.fillCircle(room.hazard.x, room.hazard.y, room.hazard.radius); g.lineStyle(2, 0xb983e4, .7); g.strokeCircle(room.hazard.x, room.hazard.y, room.hazard.radius); }
+      g.lineStyle(4, this.sim.roomCleared ? 0x83ffbb : 0x576678, .8); g.strokeCircle(room.gate.x, room.gate.y, dungeon.gateRadius);
+      g.lineStyle(2, this.sim.roomCleared ? 0x83ffbb : 0x576678, .5); g.strokeCircle(room.gate.x, room.gate.y, dungeon.gateRadius * .7);
+      if (this.sim.roomCleared) { const angle = Math.atan2(room.gate.y - p.y, room.gate.x - p.x), r = p.radius + 12; g.lineStyle(4, 0xbcefa8); g.lineBetween(p.x + Math.cos(angle) * r, p.y + Math.sin(angle) * r, p.x + Math.cos(angle) * (r + 24), p.y + Math.sin(angle) * (r + 24)); }
+    }
+    this.rig.prune(new Set(this.sim.actors.map(a => a.id)));
+    for (const a of this.sim.actors) {
+      this.rig.render(a, this.sim.time + this.resultDelay, !!this.sim.result?.won && a === p);
+      if (!a.alive) continue;
+      const friendly = a === p, color = friendly ? manifestationFor(a.manifestationId).color : a.kind === 'guardian' ? 0xffc276 : 0xf67a8e;
+      g.fillStyle(color, .035 + a.mass.distribution * .035); g.fillCircle(a.x, a.y, a.radius);
+      g.lineStyle(1.5, color, .45); g.strokeCircle(a.x, a.y, a.radius);
+      g.lineStyle(1, color, .13); g.strokeCircle(a.x, a.y, a.radius * .52);
+      const radius = B.combat.coreRadius + a.mass.distribution * 5;
+      for (let i = 4; i > 0; i--) { g.fillStyle(color, .035); g.fillCircle(a.x, a.y, radius + i * 8); }
+      if (a.stability.phase === 'unstable') { g.lineStyle(4, 0xffffff, .5 + Math.sin(this.sim.time * 16) * .45); g.strokeCircle(a.x, a.y, radius + 12); g.lineStyle(2, 0xff5069, .9); g.strokeCircle(a.x, a.y, radius + 25); }
+      const channel = a.channel;
+      if (channel.mode || channel.decay > 0) {
+        const inward = (channel.mode ?? channel.lastMode) === 'pull', alpha = channel.mode ? .25 + channel.intensity * .35 : channel.decay / C.channel.releaseDecay * .35;
+        g.lineStyle(2, inward ? 0x9fddff : 0xffcf89, alpha);
+        for (let i = 0; i < 4; i++) { const t = (this.sim.time * .8 + i / 4) % 1; const r = (inward ? 1-t : t) * a.radius; g.strokeCircle(a.x, a.y, Math.max(10,r)); }
+        for (let i = 0; i < 14; i++) { const angle = i * Math.PI * 2 / 14 + this.sim.time * .2, t = (this.sim.time + i / 14) % 1, r = (inward ? 1-t : t) * a.radius; g.fillStyle(inward ? 0xa4e1ff : 0xffd59a,alpha); g.fillCircle(a.x+Math.cos(angle)*r,a.y+Math.sin(angle)*r,2); }
+        g.fillStyle(0xffffff, channel.intensity * .6); g.fillCircle(a.x,a.y,8);
+      }
+      if (channel.overload > 0) { g.lineStyle(3, 0xff705c, .7); g.strokeCircle(a.x,a.y,32); }
+      if (a.kind === 'guardian' && this.mode === 'pve') { g.lineStyle(4, a.guardBroken > 0 ? 0x87ffbf : 0xe7bd7a, .85); g.strokeCircle(a.x,a.y,44); }
+      if (a.melee.phase !== 'idle') {
+        const reach = meleeReach(a), spec = attackSpec(a), angle = a.melee.angle, arc = spec.arc / 2 + (1-a.mass.distribution)*C.melee.arcExpansion;
+        g.lineStyle(a.melee.index===2 ? 6 : 3, color, a.melee.phase === 'active' ? .9 : .2); g.beginPath(); g.arc(a.x,a.y,reach,angle-arc,angle+arc,false);g.strokePath();
+      }
+      if (!this.sprites.has(a.id)) { const zone = this.add.zone(a.x, a.y, radius * 2, radius * 2); this.physics.add.existing(zone); (zone.body as Phaser.Physics.Arcade.Body).moves = false; this.sprites.set(a.id, zone); }
+      const zone = this.sprites.get(a.id)!; zone.setPosition(a.x, a.y); (zone.body as Phaser.Physics.Arcade.Body).reset(a.x, a.y);
+    }
+    for (const d of this.sim.debris) {
+      const color = d.owner === p.id ? 0x9bffe0 : d.owner !== null ? 0xff829b : d.previousOwner !== null ? 0xffd795 : 0xb4c8de;
+      if (d.projectile) { g.lineStyle(3, color, .45); g.lineBetween(d.x, d.y, d.x - d.vx * .04, d.y - d.vy * .04); }
+      g.fillStyle(color, d.life < 3 ? .4 : .95); const size = Math.min(9, 3 + Math.sqrt(d.mass)); g.fillRect(d.x - size / 2, d.y - size / 2, size, size);
+      if (Object.values(d.capture).some(v => v > 0)) { g.lineStyle(1, 0xffdc96, .8); g.strokeCircle(d.x, d.y, size + 4); }
+    }
+    for (const e of this.sim.effects) { g.lineStyle(3, e.hostile ? 0xff8099 : 0xa0ffdc, e.life * 1.6); g.strokeCircle(e.x, e.y, e.radius * (1 - e.life)); }
+  }
+  updateHUD(): void {
+    const p = this.sim.player, m = p.mass, text = (id: string, value: string) => { ui().querySelector<HTMLElement>(`#${id}`)!.textContent = value; };
+    text('mass-value', m.combatMass.toFixed(1)); text('core-value', `${m.coreMass.toFixed(0)} CORE`); text('field-value', `${m.fieldMass.toFixed(0)} FIELD`);
+    ui().querySelector<HTMLElement>('#core-meter')!.style.width = `${m.coreMass / Math.max(1, m.combatMass) * 100}%`;
+    ui().querySelector<HTMLElement>('#field-meter')!.style.width = `${m.fieldMass / Math.max(1, m.combatMass) * 100}%`;
+    text('stability', p.stability.phase === 'unstable' ? `⚠ CORE EXPOSED · ${(p.stability.unstableRemainingMs / 1000).toFixed(1)}s` : '● CORE STABLE');
+    ui().querySelector<HTMLElement>('#stability')!.className = p.stability.phase;
+    text('bank', this.mode === 'pve' ? `◇ ${m.unbankedMass.toFixed(1)} unbanked mass` : `${this.sim.debris.filter(d => d.owner === p.id).length} / ${slots(p)} orbits · ${m.orbitingStoredMass.toFixed(1)} stored`);
+    text('objective', this.mode === 'pvp' ? this.sim.suddenDeath ? 'SUDDEN DEATH' : clock(Math.max(0, B.pvp.duration - this.sim.time)) : clock(this.sim.time));
+    text('mission-note', this.mode === 'pve' ? this.sim.missionStage : this.mode === 'training' ? this.sim.trainingEngaged ? 'Pull to close distance. Melee to expose the Core. Discharge to escape.' : 'Hold E to pull · Hold Q to discharge · Primary: three-hit melee · R: orbit cast.' : `EFFECTIVE MASS ${this.sim.effectiveMass.toFixed(1)} · BOT SIMULATION`);
+    const rival = this.sim.actors.find(a => a !== p && a.alive);
+    text('rival', rival?.kind === 'guardian' && this.mode === 'pve' ? rival.guardBroken > 0 ? 'ANCHOR BROKEN · MELEE NOW · ' + rival.guardBroken.toFixed(1) + 's' : 'ANCHORED · HOLD PULL / DISCHARGE NEAR BOSS' : rival ? `${rival.kind.toUpperCase()} / ${rival.stability.phase.toUpperCase()} · ${rival.mass.combatMass.toFixed(0)} MASS` : 'FIELD CLEAR');
+    const channel = p.channel;
+    text('flux-value', channel.flux.toFixed(0)); ui().querySelector<HTMLElement>('#flux-meter')!.style.width = channel.flux + '%';
+    ui().querySelector<HTMLElement>('.flux-track')!.className = 'flux-track' + (channel.flux <= C.flux.low ? ' low' : '');
+    text('channel-state', channel.overload > 0 ? 'OVERLOAD · RELEASE TO RESET' : channel.mode ? channel.mode.toUpperCase() + (channel.maximumReached ? ' · MAXIMUM' : ' · CHARGING') : channel.needsRelease ? 'RELEASE CHANNEL BUTTONS' : channel.flux <= C.flux.low ? 'LOW FLUX · RECOVER' : 'FLUX READY');
+    for (const key of ['impulse', 'orbit'] as const) text('cd-'+key, p.cooldown[key] > 0 ? p.cooldown[key].toFixed(1)+'s' : 'READY');
+    for (const key of ['pull','pulse'] as const) text('cd-'+key, channel.overload > 0 ? 'OVERLOAD' : channel.mode === key ? 'CHANNELING' : 'HOLD');
+    const debug = ui().querySelector<HTMLElement>('#debug-panel')!; debug.hidden = !this.debug;
+    debug.textContent = `FPS ${this.game.loop.actualFps.toFixed(0)} | fixed ${1 / B.step}Hz\ndistribution ${m.distribution.toFixed(3)} | protected ${protectedMass(p).toFixed(1)}\nmass error ${(m.combatMass - m.coreMass - m.fieldMass - m.orbitingStoredMass).toFixed(8)}\nchannel ${p.channel.mode ?? 'none'} | flux ${p.channel.flux.toFixed(1)} | melee ${p.melee.phase} ${p.melee.index + 1}\nseed ${B.seed} | bodies ${this.sim.actors.length} | debris ${this.sim.debris.length}`;
+  }
+}
+export class TrainingScene extends ArenaScene { constructor() { super('TrainingScene', 'training'); } }
+export class PvEMissionScene extends ArenaScene { constructor() { super('PvEMissionScene', 'pve'); } }
+export class PvPArenaScene extends ArenaScene { constructor() { super('PvPArenaScene', 'pvp'); } }
+export class ResultsScene extends Phaser.Scene {
+  constructor() { super('ResultsScene'); }
+  create(data: { result: Result; mode: Mode; saved: boolean }): void {
+    backdrop(this); const { result: r, mode, saved } = data;
+    ui().innerHTML = `<main class="results"><div class="eyebrow">${mode === 'pvp' ? 'LOCAL BOT DUEL' : mode.toUpperCase()} / ${clock(r.duration)}</div><h1>${r.won ? 'Core intact.' : 'Into the dust.'}</h1><p>${r.reason}</p><div class="result-grid"><div><small>GATHERED</small><strong>${r.gained.toFixed(1)}</strong></div><div><small>BANKED</small><strong>+${r.banked.toFixed(1)}</strong></div><div><small>PERMANENT LOSS</small><strong>−${r.lost.toFixed(1)}</strong></div></div><p>${!r.won && mode !== 'training' ? `Run mass lost: ${r.gained.toFixed(1)}. Permanent loss is capped and tier protected.` : mode === 'training' ? 'Training does not change your profile.' : mode === 'pvp' ? 'Duel gains are temporary. Earn permanent mass in PvE.' : 'Your gathered mass is now permanent maximum mass.'}</p><div class="result-actions"><button id="again">Play again ↗</button><button id="menu">Return to menu</button></div><small>${saved ? 'LOCAL PROFILE SAVED' : 'SAVE UNAVAILABLE · Browser storage is blocked; progress could not be persisted.'}</small></main>`;
+    if (mode === 'pve' && r.won) ui().querySelector('.result-grid')!.insertAdjacentHTML('afterend', '<div class="dungeon-rewards">GRADE <b>' + r.grade + '</b> · MATERIALS +' + r.materials + ' · TEST SUMMON CURRENCY +' + r.currency + (r.firstClear ? '<br>FIRST CLEAR · Includes +' + r.firstClearMass + ' maximum mass and bonus materials/currency' : '<br>REPEAT CLEAR · Standard rewards') + '</div>');
+    ui().querySelector<HTMLButtonElement>('#again')!.onclick = () => this.scene.start(sceneFor[mode]); ui().querySelector<HTMLButtonElement>('#menu')!.onclick = () => this.scene.start('MainMenuScene');
+  }
+}

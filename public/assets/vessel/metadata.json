@@ -1,0 +1,52 @@
+{
+  "frameWidth": 96,
+  "frameHeight": 128,
+  "frames": 6,
+  "coreSocket": {
+    "x": 48,
+    "y": 54
+  },
+  "anchor": {
+    "x": 0.5,
+    "y": 0.421875
+  },
+  "bodyBounds": {
+    "x": 30,
+    "y": 20,
+    "width": 36,
+    "height": 89
+  },
+  "physicsRadius": 18,
+  "facings": [
+    "down",
+    "left",
+    "right",
+    "up"
+  ],
+  "states": [
+    "idle",
+    "move",
+    "melee1",
+    "melee2",
+    "heavy",
+    "pull",
+    "pulse",
+    "hit",
+    "unstable",
+    "collapse",
+    "victory"
+  ],
+  "fps": {
+    "idle": 5,
+    "move": 10,
+    "melee1": 16,
+    "melee2": 12,
+    "heavy": 8,
+    "pull": 9,
+    "pulse": 10,
+    "hit": 18,
+    "unstable": 10,
+    "collapse": 8,
+    "victory": 6
+  }
+}
