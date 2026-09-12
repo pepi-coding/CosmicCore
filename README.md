@@ -1,6 +1,6 @@
 # Cosmic Core
 
-A Phaser 3 / TypeScript combat game with a seeded 60 Hz simulation, three-room dungeon, local bot duel, and browser-local progression. See the current [combat contract 1.2](cosmic_core_game_product_contract_v1.2.md).
+A Phaser 3 / TypeScript combat game with a seeded 60 Hz simulation, five-room Shattered Moon expedition, legacy three-room dungeon, local bot duel, and browser-local progression. See the current [combat contract 1.2](cosmic_core_game_product_contract_v1.2.md).
 
 ## Run and deploy
 
@@ -36,6 +36,7 @@ Pillars block movement, melee, and channels. Break mint crystals with melee to r
 
 - **Training:** free practice with a rival that activates when you first attack or channel. Reset restarts without changing your profile.
 - **The Silent Orbit:** clear three compact rooms and enter each green gate. A cleared gate restores Core Integrity for the next room. Hold a channel near the Guardian to break its anchor, then attack during the opening. The final exit banks rewards.
+- **The Shattered Moon:** choose it in Dungeon Select. Five distinct rooms introduce Mites, Hounds, Crab anchors, intangible Wisps and the three-phase Lunar Devourer. Integrity persists between rooms; Flux refills. Room 4 offers recovery or materials. Materials and the once-only Evolution Core persist in profile schema 3. See the [Milestone 5 report](docs/milestone5-report.md).
 - **Orbital duel:** fight a deterministic local bot in a compact walled arena. The camera follows both fighters. Collapse wins; at four minutes, remaining Integrity percentage then Total Mass break ties. Exact ties enter sudden death.
 
 Dungeon extraction banks rewards. Failure or abandonment loses unbanked rewards and 1% of permanent mass, capped at 10 and protected by the evolution floor. Training does not update progression; PvP gains do not become permanent. Profiles are stored in localStorage and are specific to the browser and site origin. There is no online multiplayer or backend.

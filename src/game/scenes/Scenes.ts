@@ -1,3 +1,6 @@
+import { renderMoon, moonBossLabel } from '../render/MoonRenderer';
+import { grantMoonRewards } from '../systems/MoonRewards';
+import { enemies } from '../content/shatteredMoon';
 import Phaser from 'phaser';
 import { B, validateBalance } from '../config/balance';
 import { C } from '../config/combatV4';
@@ -47,15 +50,15 @@ class ArenaScene extends Phaser.Scene {
   sim!: Simulation; inputActions!: ActionInput; graphics!: Phaser.GameObjects.Graphics; stars!: Phaser.GameObjects.Graphics;
   accumulator = 0; hudTimer = 0; finished = false; paused = false; debug = false; sprites = new Map<number, Phaser.GameObjects.Zone>();
   labels = new Map<number, Phaser.GameObjects.Text>(); damageLabels: Phaser.GameObjects.Text[] = []; displayedMass = new Map<number, number>();
-  rig!: VesselRig; audio!: CombatAudio; lastHit = 0; resultDelay = 0; renderTime = 0;
+  rig!: VesselRig; audio!: CombatAudio; lastMoonCue = -1; lastHit = 0; resultDelay = 0; renderTime = 0;
   constructor(key: string, private mode: Mode) { super(key); }
   create(): void {
     this.accumulator = 0; this.hudTimer = 0; this.finished = false; this.paused = false; this.sprites.clear(); this.labels.clear(); this.damageLabels=[]; this.displayedMass.clear();
     const profile = store.load();
     if (this.mode === 'pve' && !enterDungeon(profile)) { this.scene.start('DungeonSelectScene'); return; }
     if (this.mode === 'pve' && economy.energyEnabled) store.save(profile);
-    this.sim = new Simulation(this.mode, profile.maximumMass, B.seed, { manifestationId: profile.equippedManifestation, level: profile.manifestationLevels[profile.equippedManifestation] });
-    this.rig = new VesselRig(this); this.audio = new CombatAudio(); this.lastHit = 0; this.resultDelay = 0; this.renderTime = 0;
+    this.sim = new Simulation(this.mode, profile.maximumMass, B.seed, { manifestationId: profile.equippedManifestation, dungeonId: this.registry.get('dungeonId'), level: profile.manifestationLevels[profile.equippedManifestation] });
+    this.rig = new VesselRig(this); this.audio = new CombatAudio(); this.lastMoonCue = -1; this.lastHit = 0; this.resultDelay = 0; this.renderTime = 0;
     this.physics.world.setBounds(0, 0, B.arena, B.arena);
     // Arcade bodies mirror the fixed-step model for collision/debug integration. Forces and authoritative state remain pure.
     this.graphics = this.add.graphics();
@@ -81,6 +84,7 @@ class ArenaScene extends Phaser.Scene {
     ui().querySelector<HTMLButtonElement>('#debug')!.onclick = () => { this.debug = !this.debug; };
     const blur = () => { if (!this.paused) this.togglePause(); }; window.addEventListener('blur', blur);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => { this.inputActions.destroy(); this.rig.destroy(); this.audio.destroy(); this.labels.clear(); this.damageLabels=[]; window.removeEventListener('blur', blur); });
+    if (this.sim.moon) { ui().querySelector('.hud-title small')!.textContent = 'THE SHATTERED MOON / NORMAL'; ui().querySelector('.hud')!.insertAdjacentHTML('beforeend','<div id="moon-boss" class="moon-boss"></div><div id="moon-cache" class="moon-cache" hidden><span>Lunar cache</span><button id="cache-recovery">Recover 35 Integrity</button><button id="cache-materials">+4 each material</button></div>'); for(const choice of ['recovery','materials'] as const) ui().querySelector<HTMLButtonElement>('#cache-'+choice)!.onclick=()=>this.sim.moon!.chooseCache(choice); }
     this.updateHUD();
   }
   togglePause(): void { this.paused = !this.paused; this.inputActions.clear(); ui().querySelector<HTMLElement>('#pause-overlay')!.hidden = !this.paused; }
@@ -94,6 +98,7 @@ class ArenaScene extends Phaser.Scene {
     this.renderWorld();
     this.audio.update(this.sim.player.channel, this.paused || portrait || !!this.sim.result);
     for (const e of this.sim.hitEvents) if (e.serial > this.lastHit) { this.lastHit = e.serial; if (e.source === this.sim.player.id || e.target === this.sim.player.id) { this.audio.impact(e.heavy); if (e.heavy) this.cameras.main.shake(C.melee.heavyShakeMs, C.melee.heavyShake); } }
+    if(this.sim.moon&&!this.paused){const cues=this.sim.moon.audio.filter(e=>e.time>this.lastMoonCue);if(cues.length){this.lastMoonCue=cues[cues.length-1].time;const cue=cues[cues.length-1].cue;this.audio.tone(cue.includes('break')?720:cue.includes('charge')?380:cue.includes('slam')?130:cue.includes('teleport')?850:240,.16,.25);}}
     this.hudTimer += delta / 1000; if (this.hudTimer >= B.visuals.hudInterval) { this.hudTimer = 0; this.updateHUD(); }
     if (this.sim.result) { this.resultDelay += delta / 1000; if (this.resultDelay >= C.feedback.victoryDuration) this.complete(); }
   }
@@ -101,7 +106,8 @@ class ArenaScene extends Phaser.Scene {
     if (this.finished || !this.sim.result) return; this.finished = true;
     const result = this.sim.result, profile = store.load(); let saved = true;
     if (this.mode !== 'training') {
-      if (this.mode === 'pve' && result.won) { const reward = grantDungeonRewards(profile, B.seed, result.duration); result.gained += reward.mass; Object.assign(result, { grade: reward.grade, materials: reward.materials, currency: reward.currency, firstClear: reward.firstClear, firstClearMass: reward.firstClearMass, dungeonId: dungeon.id }); }
+      if (this.sim.moon && result.won) Object.assign(result, grantMoonRewards(profile, this.sim.moon));
+      if (this.mode === 'pve' && result.won && !this.sim.moon) { const reward = grantDungeonRewards(profile, B.seed, result.duration); result.gained += reward.mass; Object.assign(result, { grade: reward.grade, materials: reward.materials, currency: reward.currency, firstClear: reward.firstClear, firstClearMass: reward.firstClearMass, dungeonId: dungeon.id }); }
       Object.assign(result, settle(profile, result.won, result.gained, this.mode === 'pve')); saved = store.save(profile);
     }
     this.scene.start('ResultsScene', { result, mode: this.mode, saved });
@@ -112,12 +118,13 @@ class ArenaScene extends Phaser.Scene {
     const framed = this.mode === 'pvp' && rival ? rival : rival && distance(p,rival)<500 ? rival : p;
     const desired = Phaser.Math.Clamp(Math.min(this.scale.width*.8/(Math.abs(p.x-framed.x)+200), this.scale.height*.72/(Math.abs(p.y-framed.y)+220)), B.visuals.zoomMin, B.visuals.zoomMax);
     cam.setZoom(Phaser.Math.Linear(cam.zoom, desired, .05)); cam.centerOn((p.x+framed.x)/2,(p.y+framed.y)/2);
+    if(this.sim.moon){cam.setZoom(Math.min(this.scale.width/900,this.scale.height/760));cam.centerOn(this.sim.moon.room.center.x,this.sim.moon.room.center.y);}
     g.clear(); g.lineStyle(2, 0x364965, .5); g.strokeRect(20, 20, B.arena - 40, B.arena - 40);
     if(this.mode==='pvp'){const b=map.duelBounds;g.fillStyle(0x142332,.6);g.fillRect(b.left,b.top,b.right-b.left,b.bottom-b.top);g.lineStyle(4,0x8aafba,.8);g.strokeRect(b.left,b.top,b.right-b.left,b.bottom-b.top);}
     g.lineStyle(1, 0x22314b, .23); for (let i = 0; i <= B.arena; i += 100) { g.lineBetween(i, 0, i, B.arena); g.lineBetween(0, i, B.arena, i); }
     if (this.mode === 'pve') {
-      const room = dungeon.rooms[this.sim.room], half = dungeon.roomHalfSize;
-      g.fillStyle(this.sim.room === 2 ? 0x201c31 : 0x111e29, .65); g.fillRect(room.center.x - half, room.center.y - half, half * 2, half * 2);
+      const room = this.sim.moon ? { ...this.sim.moon.room, hazard: null } : dungeon.rooms[this.sim.room], half = dungeon.roomHalfSize;
+      g.fillStyle(this.sim.moon ? this.sim.moon.room.color : this.sim.room === 2 ? 0x201c31 : 0x111e29, .65); g.fillRect(room.center.x - half, room.center.y - half, half * 2, half * 2);
       g.lineStyle(3, 0x658a94, .6); g.strokeRect(room.center.x - half, room.center.y - half, half * 2, half * 2);
       for (const o of this.sim.obstacles) { g.fillStyle(0x253340); g.fillCircle(o.x, o.y, o.radius); g.lineStyle(3, 0x5b788a); g.strokeCircle(o.x, o.y, o.radius); }
       if (room.hazard) { g.fillStyle(0xa04ed9, .18); g.fillCircle(room.hazard.x, room.hazard.y, room.hazard.radius); g.lineStyle(2, 0xb983e4, .7); g.strokeCircle(room.hazard.x, room.hazard.y, room.hazard.radius); }
@@ -125,8 +132,16 @@ class ArenaScene extends Phaser.Scene {
       g.lineStyle(2, this.sim.roomCleared ? 0x83ffbb : 0x576678, .5); g.strokeCircle(room.gate.x, room.gate.y, dungeon.gateRadius * .7);
       if (this.sim.roomCleared) { const angle = Math.atan2(room.gate.y - p.y, room.gate.x - p.x), r = p.radius + 12; g.lineStyle(4, 0xbcefa8); g.lineBetween(p.x + Math.cos(angle) * r, p.y + Math.sin(angle) * r, p.x + Math.cos(angle) * (r + 24), p.y + Math.sin(angle) * (r + 24)); }
     }
+    if (this.sim.moon) renderMoon(g, this.sim.moon);
+    for(const [id,label] of this.labels)if(!this.sim.actors.some(a=>a.id===id)){label.destroy();this.labels.delete(id);this.displayedMass.delete(id);}
     this.rig.prune(new Set(this.sim.actors.map(a => a.id)));
     for (const a of this.sim.actors) {
+      if(this.sim.moon?.states.has(a.id)) {
+        const state=this.sim.moon.states.get(a.id)!;let label=this.labels.get(a.id);
+        if(!label){label=this.add.text(0,0,'',{fontFamily:'Arial',fontSize:'12px',color:'#e6eef7',stroke:'#080c19',strokeThickness:3}).setOrigin(.5,1).setDepth(30);this.labels.set(a.id,label);}
+        label.setVisible(a.alive&&state.id!=='meteor-mite'&&state.id!=='lunar-devourer').setPosition(a.x,a.y-58).setText(enemies[state.id].name+' · '+state.massClass+(state.elite?' · '+state.elite:''));
+        continue;
+      }
       this.rig.render(a, this.sim.time + this.resultDelay, !!this.sim.result?.won && a === p);
       if (!a.alive) { this.labels.get(a.id)?.setVisible(false); const t=(this.sim.time+this.resultDelay-a.deathTime)/C.feedback.collapseDuration;if(t<1){g.lineStyle(5,0xffdca7,1-t);g.strokeCircle(a.x,a.y,20+t*100);for(let i=0;i<16;i++){const angle=i*Math.PI/8;g.fillStyle(0xffdca7,1-t);g.fillCircle(a.x+Math.cos(angle)*t*125,a.y+Math.sin(angle)*t*125,4*(1-t));}} continue; }
       const friendly = a === p, color = friendly ? manifestationFor(a.manifestationId).color : a.kind === 'guardian' ? 0xffc276 : 0xf67a8e;
@@ -142,7 +157,8 @@ class ArenaScene extends Phaser.Scene {
       g.fillStyle(0x080c19,.95);g.fillRoundedRect(a.x-44,a.y-87,88,8,3);g.fillStyle(coreExposed(a)?0xff637e:0x8ff5cf);g.fillRoundedRect(a.x-43,a.y-86,86*hp,6,2);
       let label=this.labels.get(a.id);if(!label){label=this.add.text(0,0,'',{fontFamily:'Arial',fontSize:'10px',color:'#e6eef7',align:'center',stroke:'#080c19',strokeThickness:3}).setOrigin(.5,1).setDepth(30);this.labels.set(a.id,label);}
       const shown=Phaser.Math.Linear(this.displayedMass.get(a.id)??a.mass.combatMass,a.mass.combatMass,.12);this.displayedMass.set(a.id,shown);
-      const name=a===p?'YOUR CORE':a.kind==='bot'?'VOID INITIATE':a.kind.toUpperCase();
+      const moonState=this.sim.moon?.states.get(a.id);
+      const name=moonState?enemies[moonState.id].name+' · '+moonState.massClass+(moonState.elite?' · '+moonState.elite:''):a===p?'YOUR CORE':a.kind==='bot'?'VOID INITIATE':a.kind.toUpperCase();
       label.setVisible(true).setPosition(a.x,a.y-91).setText(name+'\n'+Math.round(shown)+' MASS'+(coreExposed(a)?'\nCORE EXPOSED':''));
       const selected=a!==p && a===this.sim.actors.filter(t=>t!==p&&t.alive&&distance(p,t)<Math.max(p.radius,meleeReach(p))).sort((x,y)=>distance(p,x)-distance(p,y))[0];
       if(selected){g.lineStyle(2,0xffe7ae,.75);g.strokeEllipse(a.x,a.y+9,67,26);}
@@ -174,7 +190,7 @@ class ArenaScene extends Phaser.Scene {
     for(const c of this.sim.crystals)if(c.hp>0){g.fillStyle(0x86ffde,.8);g.fillTriangle(c.x,c.y-24,c.x-17,c.y+12,c.x+17,c.y+12);g.lineStyle(2,0xffffff,.6);g.strokeTriangle(c.x,c.y-24,c.x-17,c.y+12,c.x+17,c.y+12);g.lineBetween(c.x,c.y-24,c.x,c.y+12);}
     const events=this.sim.damageEvents.filter(e=>e.amount>=.5);
     while(this.damageLabels.length<events.length)this.damageLabels.push(this.add.text(0,0,'',{fontFamily:'Arial',fontSize:'18px',fontStyle:'bold',stroke:'#080c19',strokeThickness:4}).setOrigin(.5).setDepth(40));
-    this.damageLabels.forEach((label,i)=>{const e=events[i];label.setVisible(!!e);if(e){const age=this.sim.time-e.time, target=this.sim.actors.find(a=>a.id===e.target), x=target?.x??e.x, y=target?target.y-65:e.y;label.setText('-'+e.amount.toFixed(0)).setColor(e.critical?'#ffd080':'#ffffff').setPosition(x,y-age*60).setAlpha(Math.min(1,(.85-age)*3));for(let j=0;j<7;j++){const angle=j*2.4;g.fillStyle(e.critical?0xffd080:0xffffff,Math.max(0,1-age*4));g.fillCircle(e.x+Math.cos(angle)*age*120,e.y+55+Math.sin(angle)*age*120,2);}}});
+    this.damageLabels.forEach((label,i)=>{const e=events[i];label.setVisible(!!e);if(e){const age=this.sim.time-e.time, target=this.sim.actors.find(a=>a.id===e.target), x=target?.x??e.x, y=target?target.y-65:e.y;label.setText('-'+e.amount.toFixed(0)).setColor(e.kind==='part'?'#d799ff':e.kind==='environment'?'#8adfff':e.critical?'#ffd080':'#ffffff').setPosition(x,y-age*60).setAlpha(Math.min(1,(.85-age)*3));for(let j=0;j<7;j++){const angle=j*2.4;g.fillStyle(e.critical?0xffd080:0xffffff,Math.max(0,1-age*4));g.fillCircle(e.x+Math.cos(angle)*age*120,e.y+55+Math.sin(angle)*age*120,2);}}});
     for (const d of this.sim.debris) {
       const color = d.owner === p.id ? 0x9bffe0 : d.owner !== null ? 0xff829b : d.previousOwner !== null ? 0xffd795 : 0xb4c8de;
       if (d.projectile) { g.lineStyle(3, color, .45); g.lineBetween(d.x, d.y, d.x - d.vx * .04, d.y - d.vy * .04); }
@@ -197,6 +213,7 @@ class ArenaScene extends Phaser.Scene {
     text('mission-note', this.mode === 'pve' ? this.sim.missionStage : this.mode === 'training' ? this.sim.trainingEngaged ? 'Pull to close distance. Melee damages Core Integrity. Pulse to expand and escape.' : 'Hold E to pull · Hold Q to pulse · Primary: three-hit melee · R: orbit cast.' : `EFFECTIVE MASS ${this.sim.effectiveMass.toFixed(1)} · BOT SIMULATION`);
     const rival = this.sim.actors.filter(a => a !== p && a.alive && distance(a,p)<Math.max(p.radius,meleeReach(p))).sort((a,b)=>distance(a,p)-distance(b,p))[0];
     text('rival', rival?.kind === 'guardian' && this.mode === 'pve' ? rival.guardBroken > 0 ? 'ANCHOR BROKEN · MELEE NOW · ' + rival.guardBroken.toFixed(1) + 's' : 'ANCHORED · HOLD PULL / PULSE NEAR BOSS' : rival ? `${rival.kind.toUpperCase()} / ${Math.ceil(rival.integrity.current)} HP · ${rival.mass.combatMass.toFixed(0)} MASS` + ' · ' + (rival.mass.combatMass < p.mass.combatMass*.9 ? 'LIGHTER · PULL ADVANTAGE' : rival.mass.combatMass > p.mass.combatMass*1.1 ? 'HEAVIER · PULL RESISTED' : 'BALANCED') : 'NO TARGET IN RANGE');
+    if (this.sim.moon) { const moon=this.sim.moon; text('moon-boss',moonBossLabel(moon)); ui().querySelector<HTMLElement>('#moon-cache')!.hidden=!(this.sim.room===3&&this.sim.roomCleared&&!moon.cache); const latest=moon.events.at(-1); if(latest) text('rival',latest.text); }
     const channel = p.channel;
     text('flux-value', channel.flux.toFixed(0)); ui().querySelector<HTMLElement>('#flux-meter')!.style.width = channel.flux + '%';
     ui().querySelector<HTMLElement>('.flux-track')!.className = 'flux-track' + (channel.flux <= C.flux.low ? ' low' : '');
@@ -215,7 +232,8 @@ export class ResultsScene extends Phaser.Scene {
   create(data: { result: Result; mode: Mode; saved: boolean }): void {
     backdrop(this); const { result: r, mode, saved } = data;
     ui().innerHTML = `<main class="results"><div class="eyebrow">${mode === 'pvp' ? 'LOCAL BOT DUEL' : mode.toUpperCase()} / ${clock(r.duration)}</div><h1>${r.won ? 'Core intact.' : 'Into the dust.'}</h1><p>${r.reason}</p><div class="result-grid"><div><small>GATHERED</small><strong>${r.gained.toFixed(1)}</strong></div><div><small>BANKED</small><strong>+${r.banked.toFixed(1)}</strong></div><div><small>PERMANENT LOSS</small><strong>−${r.lost.toFixed(1)}</strong></div></div><p>${!r.won && mode !== 'training' ? `Run mass lost: ${r.gained.toFixed(1)}. Permanent loss is capped and tier protected.` : mode === 'training' ? 'Training does not change your profile.' : mode === 'pvp' ? 'Duel gains are temporary. Earn permanent mass in PvE.' : 'Your gathered mass is now permanent maximum mass.'}</p><div class="result-actions"><button id="again">Play again ↗</button><button id="menu">Return to menu</button></div><small>${saved ? 'LOCAL PROFILE SAVED' : 'SAVE UNAVAILABLE · Browser storage is blocked; progress could not be persisted.'}</small></main>`;
-    if (mode === 'pve' && r.won) ui().querySelector('.result-grid')!.insertAdjacentHTML('afterend', '<div class="dungeon-rewards">GRADE <b>' + r.grade + '</b> · MATERIALS +' + r.materials + ' · TEST SUMMON CURRENCY +' + r.currency + (r.firstClear ? '<br>FIRST CLEAR · Includes +' + r.firstClearMass + ' maximum mass and bonus materials/currency' : '<br>REPEAT CLEAR · Standard rewards') + '</div>');
+    if (mode === 'pve' && r.won && !r.rewardBreakdown) ui().querySelector('.result-grid')!.insertAdjacentHTML('afterend', '<div class="dungeon-rewards">GRADE <b>' + r.grade + '</b> · MATERIALS +' + r.materials + ' · TEST SUMMON CURRENCY +' + r.currency + (r.firstClear ? '<br>FIRST CLEAR · Includes +' + r.firstClearMass + ' maximum mass and bonus materials/currency' : '<br>REPEAT CLEAR · Standard rewards') + '</div>');
+    if(r.rewardBreakdown) ui().querySelector('.result-grid')!.insertAdjacentHTML('afterend','<div class="dungeon-rewards">GRADE <b>'+r.grade+'</b>'+Object.entries(r.rewardBreakdown).map(([label,items])=>'<p>'+label+': '+Object.entries(items).filter(([,n])=>n>0).map(([id,n])=>id+' +'+n).join(' · ')+'</p>').join('')+'</div>');
     ui().querySelector<HTMLButtonElement>('#again')!.onclick = () => this.scene.start(sceneFor[mode]); ui().querySelector<HTMLButtonElement>('#menu')!.onclick = () => this.scene.start('MainMenuScene');
   }
 }

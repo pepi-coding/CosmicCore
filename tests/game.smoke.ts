@@ -6,10 +6,10 @@ test('desktop menu, live redistribution, pause, reset, results and local save', 
   await page.screenshot({ path: 'test-results/menu.png' });
   await page.locator('[data-mode="training"]').click(); await expect(page.locator('#integrity')).toContainText('CORE INTEGRITY 100 / 100');
   await page.getByRole('button', { name: 'Telemetry' }).click();
-  await page.keyboard.down('e'); await page.waitForTimeout(1600); await page.keyboard.up('e');
-  await expect(page.locator('#debug-panel')).toContainText('distribution 1.000');
-  await page.keyboard.down('q'); await page.waitForTimeout(1600); await page.keyboard.up('q');
-  await expect(page.locator('#debug-panel')).toContainText('distribution 0.000');
+  await page.keyboard.down('e');
+  await expect(page.locator('#debug-panel')).toContainText('distribution 1.000'); await page.keyboard.up('e');
+  await page.keyboard.down('q');
+  await expect(page.locator('#debug-panel')).toContainText('distribution 0.000'); await page.keyboard.up('q');
   await page.screenshot({ path: 'test-results/training-desktop.png' });
   await page.getByRole('button', { name: 'Pause', exact: false }).click(); await expect(page.getByRole('heading', { name: 'Orbit paused' })).toBeVisible();
   await page.getByRole('button', { name: 'Resume', exact: false }).click(); await page.getByRole('button', { name: 'Reset training' }).click();

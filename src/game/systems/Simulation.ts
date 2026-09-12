@@ -1,3 +1,4 @@
+import { MoonSystem } from './MoonSystem';
 import { B } from '../config/balance';
 import { C } from '../config/combatV4';
 import { newChannel, channelForce, interruptChannel, lineOfSight, type Obstacle } from './ChannelSystem';
@@ -16,15 +17,16 @@ import { abilities } from './AbilitySystem';
 import { clamp, distance, seeded, unit, type Actions, type Actor, type Debris, type Kind, type Mode, type Result } from './types';
 
 export class Simulation {
+  moon?: MoonSystem;
   actors: Actor[] = []; debris: Debris[] = []; time = 0; phase = 0; nextSpawn = 0; suddenDeath = false;
   result: Result | null = null; random: () => number; nextId = 1; killed = new Set<number>(); trainingEngaged = false;
   effects: { x: number; y: number; radius: number; life: number; hostile: boolean }[] = [];
   trackers = new Map<number, ButtonTracker>(); hitEvents: {source: number; target: number; heavy: boolean; x: number; y: number; serial: number}[] = []; hitSerial = 0;
-  damageEvents: { x: number; y: number; amount: number; critical: boolean; time: number; target: number }[] = [];
+  damageEvents: { x: number; y: number; amount: number; critical: boolean; time: number; target: number; kind?: 'melee' | 'environment' | 'part' | 'core' }[] = [];
   crystals: { x: number; y: number; radius: number; hp: number }[] = [];
   room = 0; roomCleared = false; obstacles: Obstacle[] = [];
   readonly player: Actor; readonly effectiveMass: number;
-  constructor(public mode: Mode, public maximumMass: number, seed: number = B.seed, options: { manifestationId?: string; level?: number } = {}) {
+  constructor(public mode: Mode, public maximumMass: number, seed: number = B.seed, options: { manifestationId?: string; level?: number; dungeonId?: string } = {}) {
     this.random = seeded(seed);
     this.effectiveMass = mode === 'pvp' ? Math.min(maximumMass, divisionFor(maximumMass).ceiling) : maximumMass;
     this.player = this.actor('player', B.arena / 2, B.arena / 2, this.effectiveMass * (mode === 'pve' ? B.pve.safeMass : 1));
@@ -34,7 +36,7 @@ export class Simulation {
       const angle = this.random() * Math.PI * 2, radius = i < B.debris.initialNearCount ? B.debris.nearMin + this.random() * B.debris.nearSpread : B.debris.farMin + this.random() * B.debris.farSpread;
       this.debris.push(this.makeDebris(this.player.x + Math.cos(angle) * radius, this.player.y + Math.sin(angle) * radius, B.mass.debris, true));
     }
-    if (mode === 'pve') this.enterRoom(0); else { this.obstacles = map.pillars.map(o => ({...o})); this.seedCrystals({x: 1250, y: 1100}); }
+    if (mode === 'pve') { if (options.dungeonId === 'shattered-moon') this.moon = new MoonSystem(this); this.enterRoom(0); } else { this.obstacles = map.pillars.map(o => ({...o})); this.seedCrystals({x: 1250, y: 1100}); }
   }
   actor(kind: Kind, x: number, y: number, mass: number): Actor {
     const a: Actor = { id: this.nextId++, kind, x, y, vx: 0, vy: 0, mass: createMass(kind === 'player' ? this.maximumMass : mass, mass), integrity: { current: kind === 'player' || kind === 'bot' ? 100 : kind === 'guardian' ? 130 : 40, maximum: kind === 'player' || kind === 'bot' ? 100 : kind === 'guardian' ? 130 : 40 }, targetDistribution: .5, radius: fieldRadius(.5), cooldown: { cast: 0, impulse: 0, pulse: 0, surge: 0, contact: 0, orbit: 0 }, channel: newChannel(), melee: newMelee(), modifiers: {melee: 1, reach: 1, pull: 1, pulse: 1, fluxEfficiency: 1, fluxOnHit: 1}, manifestationId: 'vessel', hitPause: 0, hitTime: 0, deathTime: 0, guardBroken: 0, guardCharge: 0, channelUsed: false, meleeHits: 0, comboConnected: 0, impactWindow: 0, stagger: 0, cap: mass * B.mass.cap, angle: 0, alive: true };
@@ -50,6 +52,7 @@ export class Simulation {
     d.previousOwner = a.id; d.vx = Math.cos(angle) * B.combat.fragmentSpeed; d.vy = Math.sin(angle) * B.combat.fragmentSpeed; this.debris.push(d); return d;
   }
   hit(a: Actor, amount: number, direct: boolean, melee = false): number {
+    if (this.moon?.states.has(a.id)) return this.moon.hit(a, amount, melee);
     if (this.mode === 'pve' && a.kind === 'guardian' && (a.guardBroken <= 0 || !melee)) return 0;
     const actual = damage(a, amount, direct);
     if (actual > 0 && !a.alive) a.deathTime = this.time;
@@ -74,16 +77,17 @@ export class Simulation {
 
   step(input: Actions, dt = B.step): void {
     if (this.result) return;
+    if (this.moon?.state === 'intro') { this.time += dt; this.moon.update(dt); return; }
     if (input.cast || input.pulse || input.surge) this.trainingEngaged = true;
     this.time += dt;
     for (const a of this.actors) {
-      if (!a.alive) continue;
+      if (!a.alive || this.moon?.states.has(a.id)) continue;
       a.hitPause = Math.max(0, a.hitPause - dt);
       if (a.hitPause > 0) continue;
       const action = { ...(a === this.player ? input : this.botActions(a)) };
       for (const key of Object.keys(a.cooldown) as (keyof Actor['cooldown'])[]) a.cooldown[key] = Math.max(0, a.cooldown[key] - dt);
       a.stagger = Math.max(0, a.stagger - dt); a.hitTime = Math.max(0, a.hitTime - dt); a.guardBroken = Math.max(0, a.guardBroken - dt);
-      const buttons = action.buttons ?? this.trackers.get(a.id)!.sample({ primary: action.cast, impulse: action.impulse, pull: action.surge, pulse: action.pulse, orbit: action.orbit });
+      const buttons = action.buttons ?? (this.trackers.get(a.id) ?? this.trackers.set(a.id, new ButtonTracker()).get(a.id)!).sample({ primary: action.cast, impulse: action.impulse, pull: action.surge, pulse: action.pulse, orbit: action.orbit });
       // Assist only a deliberate melee press/hold, within a limited facing cone.
       if (buttons.primary.held && a.melee.phase === 'idle' && !a.channel.mode) {
         const aim = Math.atan2(action.aim.y, action.aim.x);
@@ -98,7 +102,7 @@ export class Simulation {
       a.impactWindow = Math.max(0, a.impactWindow - dt);
       const accel = B.movement.thrust * (1 - a.mass.distribution * B.movement.inertia) * (a === this.player ? 1 : B.enemy.speed) * (a.stagger > 0 ? B.movement.staggerMultiplier : 1) * (a.channel.mode === 'pull' ? .75 : 1);
       a.vx += action.move.x * accel * dt; a.vy += action.move.y * accel * dt;
-      for (const other of this.actors) if (other !== a && other.alive) { const f = gravity(other, a, a.mass.combatMass); a.vx += f.x * dt * B.gravity.entityScale * (1 - a.mass.distribution * B.movement.inertia); a.vy += f.y * dt * B.gravity.entityScale * (1 - a.mass.distribution * B.movement.inertia); }
+      for (const other of this.actors) if (other !== a && other.alive && !this.moon?.states.has(other.id)) { const f = gravity(other, a, a.mass.combatMass); a.vx += f.x * dt * B.gravity.entityScale * (1 - a.mass.distribution * B.movement.inertia); a.vy += f.y * dt * B.gravity.entityScale * (1 - a.mass.distribution * B.movement.inertia); }
       a.vx *= Math.exp(-B.movement.drag * dt); a.vy *= Math.exp(-B.movement.drag * dt);
       const speed = Math.hypot(a.vx, a.vy); if (speed > B.movement.speed) { const limit = Math.max(B.movement.speed, speed * Math.exp(-dt * B.movement.overspeedDecay)); a.vx *= limit / speed; a.vy *= limit / speed; }
       a.x = clamp(a.x + a.vx * dt, B.movement.boundary, B.arena - B.movement.boundary); a.y = clamp(a.y + a.vy * dt, B.movement.boundary, B.arena - B.movement.boundary);
@@ -109,13 +113,14 @@ export class Simulation {
     this.moveDebris(dt);
     this.contacts();
     this.environment(dt);
+    if (this.moon && this.player.alive) this.moon.update(dt);
 
     for (const a of this.actors) if (!a.alive && !this.killed.has(a.id)) {
       this.killed.add(a.id); a.deathTime = this.time; for (const d of this.debris.filter(d => d.owner === a.id)) release(a, d);
-      if (a !== this.player && this.mode === 'pve') this.player.mass.unbankedMass += a.kind === 'guardian' ? B.pve.guardianReward : B.pve.reward;
+      if (a !== this.player && this.mode === 'pve' && !this.moon) this.player.mass.unbankedMass += a.kind === 'guardian' ? B.pve.guardianReward : B.pve.reward;
       this.pulseVisual(a);
     }
-    if (this.mode === 'pve' && this.player.alive) this.mission(dt);
+    if (this.mode === 'pve' && this.player.alive && !this.moon) this.mission(dt);
     if (!this.player.alive) this.finish(false, 'Your Core collapsed');
     if (this.mode === 'pvp') {
       const opponent = this.actors[1];
@@ -141,6 +146,7 @@ export class Simulation {
       if (d.y < B.debris.boundary || d.y > B.arena - B.debris.boundary) { d.vy *= -1; d.y = clamp(d.y, B.debris.boundary, B.arena - B.debris.boundary); }
       if (d.projectile) {
         for (const a of living) if (a.id !== d.launchOwner) {
+          if (this.moon?.states.has(a.id)) { if(this.moon.projectile(a,d,d.damage)){d.projectile=false;d.launchOwner=null;d.life=B.mass.fragmentLife;break;} continue; }
           const dist = distance(a, d);
           if (dist < B.combat.coreRadius + B.combat.hitPadding) { this.hit(a, d.damage * Math.max(B.combat.minVelocityDamage, Math.hypot(d.vx - a.vx, d.vy - a.vy) / B.combat.velocityScale), true); d.projectile = false; d.launchOwner = null; d.life = B.mass.fragmentLife; d.vx *= B.combat.impactRetention; d.vy *= B.combat.impactRetention; break; }
           // A glancing trajectory strips the outer Field, while shots aimed at the Core pass through.
@@ -149,6 +155,7 @@ export class Simulation {
         }
       } else {
         for (const a of living) {
+          if (this.moon?.states.has(a.id)) continue;
           if (distance(a, d) < B.combat.coreRadius + B.combat.hitPadding) {
             const taken = recover(a.mass, d.mass, a.cap, d.previousOwner !== null && d.previousOwner !== a.id, d.fresh);
             d.mass -= taken; if (d.mass <= .00001) { d.life = 0; break; }
@@ -164,6 +171,7 @@ export class Simulation {
       source.channelUsed = true;
       for (const target of this.actors) if (target !== source && target.alive) {
         const f = channelForce(source, target, target.mass.combatMass, this.obstacles);
+        if (this.moon?.states.has(target.id)) { if (source === this.player) this.moon.force(target, f, dt); continue; }
         target.vx += f.x * dt; target.vy += f.y * dt;
         if (source.channel.mode === 'pulse' && (f.x || f.y)) target.impactWindow = .4;
         if (source.channel.mode === 'pull' && (f.x !== 0 || f.y !== 0) && distance(source, target) < C.channel.captureRadius) { const damping = Math.exp(-C.channel.captureDamping * dt); target.vx *= damping; target.vy *= damping; }
@@ -188,6 +196,7 @@ export class Simulation {
         const n = unit({ x: target.x - source.x, y: target.y - source.y });
         const momentum = 1 + clamp(Math.hypot(source.vx,source.vy)/C.melee.momentumSpeed,0,1)*C.melee.momentumCap;
         const force = C.melee.knockback * attackSpec(source).force * (1 + source.mass.distribution) * momentum * Math.min(1.4, source.mass.combatMass / Math.max(1, target.mass.combatMass));
+        if (this.moon?.states.has(target.id)) { const state = this.moon.states.get(target.id)!; if (state.massClass === 'Anchored' || state.massClass === 'Titanic') continue; if (heavy && state.id === 'comet-hound' && source.mass.distribution >= .65) { state.state = 'stagger'; state.timer = 3; } }
         target.vx += n.x * force; target.vy += n.y * force; target.impactWindow = .4;
         source.vx -= n.x * 18; source.vy -= n.y * 18;
         target.stagger = (heavy ? C.melee.heavyStagger : C.melee.stagger) * (1 + source.mass.distribution);
@@ -198,7 +207,7 @@ export class Simulation {
   }
   contacts(): void {
     const p = this.player;
-    for (const a of this.actors) if (a !== p && a.alive && p.alive && distance(a, p) < B.combat.coreRadius * 2 + B.combat.contactPadding) {
+    for (const a of this.actors) if (a !== p && !this.moon?.states.has(a.id) && a.alive && p.alive && distance(a, p) < B.combat.coreRadius * 2 + B.combat.contactPadding) {
 
       const n = unit({ x: a.x - p.x, y: a.y - p.y }); a.vx += n.x * B.combat.contactPush; a.vy += n.y * B.combat.contactPush; p.vx -= n.x * B.combat.contactPush; p.vy -= n.y * B.combat.contactPush;
     }
@@ -207,6 +216,7 @@ export class Simulation {
     this.crystals = [{x:center.x-80,y:center.y-130,radius:20,hp:24},{x:center.x+70,y:center.y+130,radius:20,hp:24}];
   }
   environment(dt: number): void {
+    if (this.moon) { const c = this.moon.room.center; this.player.x = clamp(this.player.x,c.x-290,c.x+290); this.player.y = clamp(this.player.y,c.y-290,c.y+290); return; }
     const room = this.mode === 'pve' ? dungeon.rooms[this.room] : null;
     const half = dungeon.roomHalfSize;
     const bounds = room ? {left:room.center.x-half,right:room.center.x+half,top:room.center.y-half,bottom:room.center.y+half} : this.mode === 'pvp' ? map.duelBounds : {left:B.movement.boundary,right:B.arena-B.movement.boundary,top:B.movement.boundary,bottom:B.arena-B.movement.boundary};
@@ -234,6 +244,7 @@ export class Simulation {
     if (!room) for(const d of this.debris) if(d.owner===null){const r=distance(d,map.well);if(r<map.well.radius){const n=unit({x:map.well.x-d.x,y:map.well.y-d.y});d.vx+=n.x*B.pve.wellForce*dt;d.vy+=n.y*B.pve.wellForce*dt;}if(distance(d,map.entropy)<map.entropy.radius)d.life-=dt*B.pve.entropyDecay;}
   }
   enterRoom(index: number): void {
+    if (this.moon) { this.moon.enter(index); return; }
     this.room = index; this.phase = index; this.roomCleared = false;
     const room = dungeon.rooms[index];
     for (const d of this.debris) if (d.owner === this.player.id) release(this.player, d);
@@ -245,6 +256,7 @@ export class Simulation {
     for (let i = 0; i < 12; i++) { const angle = this.random() * Math.PI * 2; this.debris.push(this.makeDebris(room.center.x + Math.cos(angle) * 180, room.center.y + Math.sin(angle) * 180, B.mass.debris, true)); }
   }
   get missionStage(): string {
+    if (this.moon) return `${this.room + 1}/5 · ${this.moon.room.name} · ${this.moon.hint}`;
     const r = dungeon.rooms[this.room];
     return this.roomCleared ? this.room === 2 ? 'DUNGEON CLEAR · Enter the green exit to bank rewards' : 'ROOM CLEAR · Enter the green gate to continue' : String(this.room + 1).padStart(2, '0') + ' / ' + r.name + ' · ' + r.instruction;
   }
@@ -263,5 +275,5 @@ export class Simulation {
       if (this.room < dungeon.rooms.length - 1) this.enterRoom(this.room + 1); else this.finish(true, 'The Silent Orbit completed');
     }
   }
-  finish(won: boolean, reason: string): void { if (!this.result) this.result = { won, reason, gained: this.player.mass.unbankedMass, banked: 0, lost: 0, duration: this.time }; }
+  finish(won: boolean, reason: string): void { if (this.moon && !won) this.moon.state = 'failure'; if (!this.result) this.result = { won, reason, gained: this.player.mass.unbankedMass, banked: 0, lost: 0, duration: this.time }; }
 }
